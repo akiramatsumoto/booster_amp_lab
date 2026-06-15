@@ -34,10 +34,42 @@ class FallRateDomainRandCurriculum:
     """
 
     LEVELS: list[dict] = [
-        dict(push_vel=0.5),
-        dict(push_vel=0.7, gains_range=(0.9, 1.1),   leg_mass_range=(-0.2, 0.6)),
-        dict(push_vel=1.0, gains_range=(0.85, 1.15),  leg_mass_range=(-0.3, 0.8)),
-        dict(push_vel=1.5, gains_range=(0.8, 1.2),    leg_mass_range=(-0.4, 1.0)),
+        # Level 0 — mild baseline (matches EventCfg initial values)
+        dict(
+            push_vel=0.4,       push_interval=(6.0, 10.0),
+            trunk_mass=(-0.15,  0.5),
+            leg_mass=(-0.1,     0.2),
+            com_xy=0.03,
+            friction=(0.8,      1.2),
+            gains=(0.9,         1.1),
+        ),
+        # Level 1
+        dict(
+            push_vel=0.6,       push_interval=(4.0, 8.0),
+            trunk_mass=(-0.2,   0.7),
+            leg_mass=(-0.15,    0.4),
+            com_xy=0.04,
+            friction=(0.65,     1.4),
+            gains=(0.8,         1.2),
+        ),
+        # Level 2
+        dict(
+            push_vel=1.0,       push_interval=(3.0, 6.0),
+            trunk_mass=(-0.3,   0.9),
+            leg_mass=(-0.25,    0.6),
+            com_xy=0.05,
+            friction=(0.5,      1.6),
+            gains=(0.7,         1.3),
+        ),
+        # Level 3 — full randomization
+        dict(
+            push_vel=1.5,       push_interval=(3.0, 6.0),
+            trunk_mass=(-0.4,   1.2),
+            leg_mass=(-0.35,    0.9),
+            com_xy=0.06,
+            friction=(0.4,      1.8),
+            gains=(0.6,         1.4),
+        ),
     ]
 
     def __init__(
@@ -98,31 +130,41 @@ class FallRateDomainRandCurriculum:
         return self._level
 
     def _apply_level(self, env: "ManagerBasedRLEnv") -> None:
-        params = self.LEVELS[self._level]
+        p = self.LEVELS[self._level]
 
-        # push_robot velocity range
-        v = params["push_vel"]
+        # push_robot: velocity + interval
+        v = p["push_vel"]
         push_cfg = env.event_manager.get_term_cfg("push_robot")
         push_cfg.params["velocity_range"] = {"x": (-v, v), "y": (-v, v)}
+        push_cfg.interval_range_s = p["push_interval"]
 
-        # reset-mode actuator gains (no-op at level 0; term may not exist yet)
-        if "gains_range" in params:
-            lo, hi = params["gains_range"]
-            try:
-                gains_cfg = env.event_manager.get_term_cfg("randomize_actuator_gains_reset")
-                gains_cfg.params["stiffness_distribution_params"] = (lo, hi)
-                gains_cfg.params["damping_distribution_params"] = (lo, hi)
-            except ValueError:
-                pass
+        # trunk mass
+        env.event_manager.get_term_cfg("trunk_mass").params[
+            "mass_distribution_params"
+        ] = p["trunk_mass"]
 
-        # reset-mode leg mass
-        if "leg_mass_range" in params:
-            lo, hi = params["leg_mass_range"]
-            try:
-                mass_cfg = env.event_manager.get_term_cfg("randomize_leg_mass")
-                mass_cfg.params["mass_distribution_params"] = (lo, hi)
-            except ValueError:
-                pass
+        # leg mass
+        env.event_manager.get_term_cfg("randomize_leg_mass").params[
+            "mass_distribution_params"
+        ] = p["leg_mass"]
+
+        # base CoM
+        c = p["com_xy"]
+        env.event_manager.get_term_cfg("base_com").params["com_range"] = {
+            "x": (-c, c), "y": (-c, c), "z": (-c * 0.25, c * 0.25)
+        }
+
+        # joint friction
+        lo, hi = p["friction"]
+        env.event_manager.get_term_cfg("joint_friction").params[
+            "friction_distribution_params"
+        ] = (lo, hi)
+
+        # actuator gains
+        lo, hi = p["gains"]
+        gains_cfg = env.event_manager.get_term_cfg("randomize_actuator_gains")
+        gains_cfg.params["stiffness_distribution_params"] = (lo, hi)
+        gains_cfg.params["damping_distribution_params"] = (lo, hi)
 
 
 def ball_distance_curriculum(

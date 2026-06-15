@@ -283,6 +283,7 @@ class ObservationsCfg:
 
 @configclass
 class EventCfg:
+    # --- Fixed startup events (CPU-bucket based; not efficient for per-reset) ---
     physics_material_robot = EventTerm(
         func=mdp.randomize_rigid_body_material,
         mode="startup",
@@ -314,75 +315,33 @@ class EventCfg:
             "operation": "scale",
         },
     )
+    # Robot + ball pose reset is handled inside SoccerKickCommand._resample_command.
+
+    # --- Curriculum-controlled interval event ---
+    push_robot = EventTerm(
+        func=mdp.push_by_setting_velocity,
+        mode="interval",
+        interval_range_s=(6.0, 10.0),
+        params={"velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)}},
+    )
+    # --- Curriculum-controlled reset-mode events ---
+    # All start at Level 0 (mild). FallRateDomainRandCurriculum widens
+    # these as the fall rate drops.
     trunk_mass = EventTerm(
         func=mdp.randomize_rigid_body_mass,
-        mode="startup",
+        mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="Trunk"),
-            "mass_distribution_params": (-0.2, 0.8),
+            "mass_distribution_params": (-0.1, 0.3),
             "operation": "add",
         },
     )
     base_com = EventTerm(
         func=mdp.randomize_rigid_body_com,
-        mode="startup",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names="Trunk"),
-            "com_range": {"x": (-0.04, 0.04), "y": (-0.04, 0.04), "z": (-0.01, 0.01)},
-        },
-    )
-    leg_mass = EventTerm(
-        func=mdp.randomize_rigid_body_mass,
-        mode="startup",
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                body_names=[".*_Hip_Pitch", ".*_Hip_Roll", ".*_Hip_Yaw", ".*_Shank", ".*_Ankle_Cross", ".*_foot_link"],
-            ),
-            "mass_distribution_params": (-0.2, 0.4),
-            "operation": "add",
-        },
-    )
-    joint_friction = EventTerm(
-        func=mdp.randomize_joint_parameters,
-        mode="startup",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-            "friction_distribution_params": (0.5, 1.5),
-            "operation": "scale",
-            "distribution": "uniform",
-        },
-    )
-    # Robot + ball pose reset is handled inside SoccerKickCommand._resample_command.
-
-    push_robot = EventTerm(
-        func=mdp.push_by_setting_velocity,
-        mode="interval",
-        interval_range_s=(3.0, 6.0),
-        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
-    )
-    randomize_actuator_gains = EventTerm(
-        func=mdp.randomize_actuator_gains,
-        mode="startup",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "stiffness_distribution_params": (0.8, 1.2),
-            "damping_distribution_params": (0.8, 1.2),
-            "operation": "scale",
-            "distribution": "uniform",
-        },
-    )
-    # Curriculum-controlled reset-mode events (start as no-ops; ranges
-    # are widened by FallRateDomainRandCurriculum as training progresses).
-    randomize_actuator_gains_reset = EventTerm(
-        func=mdp.randomize_actuator_gains,
         mode="reset",
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "stiffness_distribution_params": (1.0, 1.0),
-            "damping_distribution_params": (1.0, 1.0),
-            "operation": "scale",
-            "distribution": "uniform",
+            "asset_cfg": SceneEntityCfg("robot", body_names="Trunk"),
+            "com_range": {"x": (-0.02, 0.02), "y": (-0.02, 0.02), "z": (-0.005, 0.005)},
         },
     )
     randomize_leg_mass = EventTerm(
@@ -391,10 +350,31 @@ class EventCfg:
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
-                body_names=[".*_Thigh", ".*_Shank", ".*_Foot"],
+                body_names=[".*_Hip_Pitch", ".*_Hip_Roll", ".*_Hip_Yaw", ".*_Shank", ".*_Ankle_Cross", ".*_foot_link"],
             ),
-            "mass_distribution_params": (0.0, 0.0),
+            "mass_distribution_params": (-0.05, 0.1),
             "operation": "add",
+        },
+    )
+    joint_friction = EventTerm(
+        func=mdp.randomize_joint_parameters,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+            "friction_distribution_params": (0.9, 1.1),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+    randomize_actuator_gains = EventTerm(
+        func=mdp.randomize_actuator_gains,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+            "stiffness_distribution_params": (0.95, 1.05),
+            "damping_distribution_params": (0.95, 1.05),
+            "operation": "scale",
+            "distribution": "uniform",
         },
     )
 
