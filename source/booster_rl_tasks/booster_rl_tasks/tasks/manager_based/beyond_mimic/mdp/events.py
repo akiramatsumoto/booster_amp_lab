@@ -790,11 +790,20 @@ def randomize_rigid_body_com(
     ranges = torch.tensor(range_list, device="cpu")
     rand_samples = math_utils.sample_uniform(ranges[:, 0], ranges[:, 1], (len(env_ids), 3), device="cpu").unsqueeze(1)
 
-    # get the current com of the bodies (num_assets, num_bodies)
+    # get the current com of the bodies (num_assets, num_bodies, 10)
     coms = asset.root_physx_view.get_coms().clone()
 
-    # Randomize the com in range
-    coms[:, body_ids, :3] += rand_samples
+    # cache the nominal CoM on the first call so that repeated resets randomize
+    # around the fixed nominal value instead of accumulating drift (this event
+    # runs in reset mode, driven by the domain-rand curriculum).
+    if not hasattr(asset, "_nominal_coms"):
+        asset._nominal_coms = coms.clone()
+
+    # randomize the com in range, only for the reset envs (env_ids), starting
+    # from the cached nominal value to keep the randomization absolute
+    coms[env_ids[:, None], body_ids, :3] = (
+        asset._nominal_coms[env_ids[:, None], body_ids, :3] + rand_samples
+    )
 
     # Set the new coms
     asset.root_physx_view.set_coms(coms, env_ids)

@@ -11,11 +11,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from isaaclab.managers import ManagerTermBase
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.managers import CurriculumTermCfg
 
 
-class FallRateDomainRandCurriculum:
+class FallRateDomainRandCurriculum(ManagerTermBase):
     """Fall-rate-gated domain randomization curriculum.
 
     Tracks a per-batch EMA of fall rate (fall_height | fall_tilt).
@@ -72,22 +75,13 @@ class FallRateDomainRandCurriculum:
         ),
     ]
 
-    def __init__(
-        self,
-        fall_rate_threshold: float = 0.15,
-        consecutive_required: int = 5,
-        ema_alpha: float = 0.1,
-        check_interval_steps: int = 4096 * 24,
-    ):
-        self.threshold = fall_rate_threshold
-        self.consecutive_required = consecutive_required
-        self.alpha = ema_alpha
-        self.check_interval = check_interval_steps
-
-        # Required by isaaclab's callable_to_string serialization
-        self.__name__ = type(self).__name__
-        self.__module__ = type(self).__module__
-        self.__qualname__ = type(self).__qualname__
+    def __init__(self, cfg: "CurriculumTermCfg", env: "ManagerBasedRLEnv"):
+        super().__init__(cfg, env)
+        p = cfg.params
+        self.threshold = p.get("fall_rate_threshold", 0.15)
+        self.consecutive_required = p.get("consecutive_required", 5)
+        self.alpha = p.get("ema_alpha", 0.1)
+        self.check_interval = p.get("check_interval_steps", 4096 * 24)
 
         self._level: int = 0
         self._consecutive: int = 0
@@ -98,6 +92,10 @@ class FallRateDomainRandCurriculum:
         self,
         env: "ManagerBasedRLEnv",
         env_ids: Sequence[int],
+        fall_rate_threshold: float = 0.15,
+        consecutive_required: int = 5,
+        ema_alpha: float = 0.1,
+        check_interval_steps: int = 4096 * 24,
     ) -> int:
         # --- 1. Update EMA with this batch's fall rate ---
         fall_h = env.termination_manager.get_term("fall_height")[env_ids]

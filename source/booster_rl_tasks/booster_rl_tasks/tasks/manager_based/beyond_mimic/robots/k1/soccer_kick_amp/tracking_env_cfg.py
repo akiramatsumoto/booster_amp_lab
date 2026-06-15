@@ -545,12 +545,13 @@ class CurriculumCfg:
         },
     )
     fall_rate_rand = CurrTerm(
-        func=mdp.soccer_curriculums.FallRateDomainRandCurriculum(
-            fall_rate_threshold=0.15,
-            consecutive_required=5,
-            ema_alpha=0.1,
-            check_interval_steps=4096 * 24,
-        ),
+        func=mdp.soccer_curriculums.FallRateDomainRandCurriculum,
+        params={
+            "fall_rate_threshold": 0.15,
+            "consecutive_required": 5,
+            "ema_alpha": 0.1,
+            "check_interval_steps": 4096 * 24,
+        },
     )
 
 
