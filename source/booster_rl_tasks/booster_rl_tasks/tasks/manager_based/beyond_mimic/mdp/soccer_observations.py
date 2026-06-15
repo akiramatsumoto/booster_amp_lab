@@ -97,6 +97,18 @@ def is_shoot_flag(env: "ManagerBasedRLEnv", command_name: str = "soccer_kick") -
     return _cmd(env, command_name).is_shoot.float().unsqueeze(-1)
 
 
+def stop_flag(env: "ManagerBasedRLEnv", command_name: str = "soccer_kick") -> torch.Tensor:
+    """Mode flag: 1 if the env is in post-kick "stop" mode, else 0 (kick).
+
+    During training this latches to 1 once a kick succeeds (see
+    ``SoccerKickCommand``). At deploy time the same input is driven externally
+    to command the policy to stand still or to kick.
+
+    Shape: (num_envs, 1)
+    """
+    return _cmd(env, command_name).stop_mode.float().unsqueeze(-1)
+
+
 # --- CRITIC (privileged) observations -------------------------------------
 def ball_pos_b_gt(env: "ManagerBasedRLEnv", command_name: str = "soccer_kick") -> torch.Tensor:
     """Ground-truth ball xyz in body-yaw frame.

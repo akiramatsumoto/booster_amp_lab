@@ -192,6 +192,10 @@ class ObservationsCfg:
             func=mdp.soccer_observations.is_shoot_flag,
             params={"command_name": "soccer_kick"},
         )
+        stop_flag = ObsTerm(
+            func=mdp.soccer_observations.stop_flag,
+            params={"command_name": "soccer_kick"},
+        )
 
         def __post_init__(self):
             self.enable_corruption = True
@@ -239,6 +243,10 @@ class ObservationsCfg:
         )
         is_shoot = ObsTerm(
             func=mdp.soccer_observations.is_shoot_flag,
+            params={"command_name": "soccer_kick"},
+        )
+        stop_flag = ObsTerm(
+            func=mdp.soccer_observations.stop_flag,
             params={"command_name": "soccer_kick"},
         )
         kick_flags = ObsTerm(
@@ -461,6 +469,23 @@ class RewardsCfg:
     pelvis_orientation = RewTerm(
         func=mdp.soccer_rewards.pelvis_orientation_penalty,
         weight=-1.0,
+    )
+    # ---- V5 post-kick stop mode ----
+    # Rewards standing still once the env latches into stop mode after a
+    # successful kick. Zero before the kick, so it never fights the approach
+    # / kick shaping. Paired with the ``stop_flag`` observation so the same
+    # input can command stand-still vs. kick at deploy time.
+    stand_still = RewTerm(
+        func=mdp.soccer_rewards.stand_still,
+        weight=4.0,
+        params={"command_name": "soccer_kick"},
+    )
+    # Whole-body return to default pose once stopped — base velocity alone is
+    # not enough to keep a clean standing posture (negative weight).
+    stop_joint_deviation = RewTerm(
+        func=mdp.soccer_rewards.joint_deviation_in_stop,
+        weight=-0.5,
+        params={"command_name": "soccer_kick"},
     )
     alive = RewTerm(func=mdp.soccer_rewards.alive_reward, weight=0.5)
     terminated = RewTerm(func=mdp.soccer_rewards.terminated_penalty, weight=-20.0)

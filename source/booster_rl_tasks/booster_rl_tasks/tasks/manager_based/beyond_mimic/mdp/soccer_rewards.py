@@ -750,7 +750,9 @@ def search_yaw_velocity(
     yaw_rate = asset.data.root_ang_vel_b[:, 2].abs()
     shaped = torch.clamp((yaw_rate - min_rate) / max_rate, min=0.0, max=1.0)
     not_seen = 1.0 - cmd.ball_mask_perceived
-    return shaped * not_seen
+    # V5: searching/turning must not be rewarded once the env is in stop mode.
+    active = 1.0 - cmd.stop_mode.float()
+    return shaped * not_seen * active
 
 
 def last_seen_dt_penalty(
@@ -769,7 +771,9 @@ def last_seen_dt_penalty(
     Shape: (num_envs,) in ``[0, 1]``.
     """
     cmd = _cmd(env, command_name)
-    return torch.clamp(cmd.last_seen_dt, min=0.0, max=max_dt) / max_dt
+    penalty = torch.clamp(cmd.last_seen_dt, min=0.0, max=max_dt) / max_dt
+    # V5: don't penalize losing sight of the ball once the env is standing still.
+    return penalty * (1.0 - cmd.stop_mode.float())
 
 
 def pre_kick_last_seen_dt_penalty(
@@ -811,7 +815,9 @@ def head_yaw_search(
     head_yaw_vel = asset.data.joint_vel[:, j_idx].abs()
     shaped = torch.clamp(head_yaw_vel - min_abs_rate, min=0.0)
     not_seen = 1.0 - cmd.ball_mask_perceived
-    return shaped * not_seen
+    # V5: no head-search reward once the env is in stop mode.
+    active = 1.0 - cmd.stop_mode.float()
+    return shaped * not_seen * active
 
 
 def lost_ball_freeze_penalty(
@@ -907,6 +913,59 @@ def pelvis_orientation_penalty(
     asset: Articulation = env.scene[asset_cfg.name]
     proj_grav = asset.data.projected_gravity_b
     return torch.sum(proj_grav[:, :2] ** 2, dim=-1)
+
+
+def stand_still(
+    env: "ManagerBasedRLEnv",
+    command_name: str = "soccer_kick",
+    lin_sigma: float = 0.5,
+    ang_sigma: float = 0.5,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward standing still while the env is in post-kick stop mode.
+
+    V5. Active only when ``cmd.stop_mode`` is set (latched on the first
+    successful kick). Rewards low base horizontal linear speed and low base
+    yaw rate via a Gaussian kernel, so the policy settles in place after the
+    kick instead of chasing the ball. Returns 0 in kick mode, so this term
+    never competes with the approach/kick shaping before the kick.
+
+    Shape: (num_envs,) in ``[0, 1]``.
+    """
+    cmd = _cmd(env, command_name)
+    asset: Articulation = env.scene[asset_cfg.name]
+    lin_speed = torch.linalg.norm(asset.data.root_lin_vel_b[:, :2], dim=-1)
+    yaw_rate = asset.data.root_ang_vel_b[:, 2].abs()
+    settle = torch.exp(-(lin_speed**2) / (lin_sigma**2)) * torch.exp(
+        -(yaw_rate**2) / (ang_sigma**2)
+    )
+    return cmd.stop_mode.float() * settle
+
+
+def joint_deviation_in_stop(
+    env: "ManagerBasedRLEnv",
+    command_name: str = "soccer_kick",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """L1 deviation of all joints from their default pose, gated on stop mode.
+
+    V5. Complements ``stand_still`` (which only constrains the base): a frozen
+    base can still leave the limbs in an arbitrary post-kick pose. This term
+    drives the whole body back to the default standing posture once the env has
+    latched into stop mode. Zero before the kick, so it never interferes with
+    the kicking motion. Use a *negative* weight (it returns a non-negative
+    deviation magnitude).
+
+    Shape: (num_envs,).
+    """
+    cmd = _cmd(env, command_name)
+    asset: Articulation = env.scene[asset_cfg.name]
+    angle = (
+        asset.data.joint_pos[:, asset_cfg.joint_ids]
+        - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    )
+    deviation = torch.sum(torch.abs(angle), dim=1)
+    return cmd.stop_mode.float() * deviation
 
 
 def alive_reward(env: "ManagerBasedRLEnv") -> torch.Tensor:

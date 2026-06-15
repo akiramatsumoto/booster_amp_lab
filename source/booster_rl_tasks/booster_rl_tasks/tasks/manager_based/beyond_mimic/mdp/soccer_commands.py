@@ -137,6 +137,11 @@ class SoccerKickCommand(CommandTerm):
         self._episode_kick_success_awarded = torch.zeros(N, dtype=torch.bool, device=d)
         self._goal_awarded = torch.zeros(N, dtype=torch.bool, device=d)
         self._ball_out_of_field = torch.zeros(N, dtype=torch.bool, device=d)
+        # V5: post-kick "stop" mode. Latches True once a kick succeeds (when
+        # ``enable_stop_after_kick``) and stays set for the rest of the episode.
+        # Exposed to the policy via the ``stop_flag`` observation so it can be
+        # driven externally at deploy time to command kick vs. stand-still.
+        self._stop_mode = torch.zeros(N, dtype=torch.bool, device=d)
         self._steps_since_kick = torch.full((N,), -1, dtype=torch.long, device=d)
         self._peak_kick_speed = torch.zeros(N, device=d)
         # V4.3: lifetime peak (per-episode max, never reset by multi-attempt).
@@ -340,6 +345,11 @@ class SoccerKickCommand(CommandTerm):
     @property
     def kick_success_awarded(self) -> torch.Tensor:
         return self._kick_success_awarded
+
+    @property
+    def stop_mode(self) -> torch.Tensor:
+        """Per-env post-kick stop flag (True = stand still, False = kick)."""
+        return self._stop_mode
 
     @property
     def goal_awarded(self) -> torch.Tensor:
@@ -850,6 +860,7 @@ class SoccerKickCommand(CommandTerm):
         self._goal_awarded[env_ids_t] = False
         self._pass_landing_awarded[env_ids_t] = False
         self._ball_out_of_field[env_ids_t] = False
+        self._stop_mode[env_ids_t] = False
         self._steps_since_kick[env_ids_t] = -1
         self._peak_kick_speed[env_ids_t] = 0.0
         self._lifetime_peak_kick_speed[env_ids_t] = 0.0
@@ -1023,6 +1034,13 @@ class SoccerKickCommand(CommandTerm):
             self._episode_kick_success_awarded | success_now
         )
 
+        # ----- V5 post-kick stop-mode latch -----------------------------
+        # Once a kick succeeds, latch the env into stop mode for the rest of
+        # the episode. The policy is rewarded for standing still
+        # (``stand_still``) while kick/search shaping is gated off.
+        if bool(self.cfg.enable_stop_after_kick):
+            self._stop_mode = self._stop_mode | success_now
+
         # ----- V4 multi-attempt support (shoot mode only) ---------------
         # When the ball has come to rest AND the foot is away from it, clear
         # the kick latches for shoot-mode envs so a subsequent approach can
@@ -1039,6 +1057,9 @@ class SoccerKickCommand(CommandTerm):
                 & foot_away
                 & self._is_shoot
                 & (~self._goal_awarded)
+                # V5: a stopped env must not re-arm for another attempt — it
+                # stays put until episode reset.
+                & (~self._stop_mode)
             )
             self._kick_contact_awarded = self._kick_contact_awarded & ~ready_for_next
             self._kick_success_awarded = self._kick_success_awarded & ~ready_for_next
@@ -1337,6 +1358,14 @@ class SoccerKickCommandCfg(CommandTermCfg):
     enable_multi_attempt_shoot: bool = True
     multi_attempt_ball_speed_thresh: float = 0.5
     multi_attempt_foot_clear_dist: float = 0.5
+
+    # V5 — post-kick stop mode. When True, an env latches into "stop" mode on
+    # the first successful kick and holds it until episode reset: the policy
+    # observes ``stop_flag`` = 1, is rewarded for standing still, and kick /
+    # search shaping is gated off. Set False to recover the pure multi-attempt
+    # kicking behaviour. At deploy time the ``stop_flag`` observation input is
+    # driven externally to switch between kick and stand-still on demand.
+    enable_stop_after_kick: bool = True
 
 
 def _uniform(lo: float, hi: float, *, n: int, device: torch.device) -> torch.Tensor:
