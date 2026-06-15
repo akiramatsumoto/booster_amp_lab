@@ -84,6 +84,11 @@ class FallRateDomainRandCurriculum:
         self.alpha = ema_alpha
         self.check_interval = check_interval_steps
 
+        # Required by isaaclab's callable_to_string serialization
+        self.__name__ = type(self).__name__
+        self.__module__ = type(self).__module__
+        self.__qualname__ = type(self).__qualname__
+
         self._level: int = 0
         self._consecutive: int = 0
         self._ema_fall_rate: float = 0.0
