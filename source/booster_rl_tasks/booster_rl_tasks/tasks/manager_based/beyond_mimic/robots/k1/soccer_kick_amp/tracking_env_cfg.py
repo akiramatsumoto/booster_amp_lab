@@ -29,7 +29,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.noise import AdditiveGaussianNoiseCfg as GaussianNoise
+from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 import booster_rl_tasks.tasks.manager_based.beyond_mimic.mdp as mdp
 from booster_rl_tasks.assets.objects import (
@@ -137,31 +137,30 @@ class ObservationsCfg:
         # proprio (noisy)
         base_ang_vel = ObsTerm(
             func=mdp.base_ang_vel,
-            noise=GaussianNoise(mean=0.0, std=0.05),
+            noise=Unoise(n_min=-0.2, n_max=0.2),
             clip=(-100.0, 100.0),
             scale=1.0,
         )
         projected_gravity = ObsTerm(
             func=mdp.projected_gravity,
-            noise=GaussianNoise(mean=0.0, std=0.025),
+            noise=Unoise(n_min=-0.05, n_max=0.05),
             clip=(-100.0, 100.0),
             scale=1.0,
         )
         joint_pos = ObsTerm(
             func=mdp.joint_pos,
-            noise=GaussianNoise(mean=0.0, std=0.01),
+            noise=Unoise(n_min=-0.01, n_max=0.01),
             clip=(-100.0, 100.0),
             scale=1.0,
         )
         joint_vel = ObsTerm(
             func=mdp.joint_vel,
-            noise=GaussianNoise(mean=0.0, std=0.01),
+            noise=Unoise(n_min=-1.5, n_max=1.5),
             clip=(-100.0, 100.0),
             scale=1.0,
         )
         actions = ObsTerm(
             func=mdp.last_action,
-            noise=GaussianNoise(mean=0.0, std=0.01),
             clip=(-100.0, 100.0),
             scale=1.0,
         )
@@ -340,6 +339,18 @@ class EventCfg:
         interval_range_s=(6.0, 10.0),
         params={"velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)}},
     )
+    randomize_actuator_gains = EventTerm(
+        func=mdp.randomize_actuator_gains,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+            "stiffness_distribution_params": (0.8, 1.2),
+            "damping_distribution_params": (0.8, 1.2),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+
 
 
 # =========================================================================

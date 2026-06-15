@@ -270,7 +270,7 @@ class AmpOnPolicyRunner:
                     next_amp_obs_with_term = torch.clone(next_amp_obs)
                     reset_env_ids = self.env.env.env.reset_buf.nonzero(as_tuple=False).squeeze(-1)
 
-                    terminal_amp_states = extras["observations"].get("amp_observations")[reset_env_ids]
+                    terminal_amp_states = extras["observations"].get("amp_observations")[reset_env_ids].to(self.device)
                     next_amp_obs_with_term[reset_env_ids] = terminal_amp_states
 
                     amp_reward_scale = None

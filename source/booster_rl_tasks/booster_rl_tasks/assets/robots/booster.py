@@ -1,5 +1,5 @@
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import ImplicitActuatorCfg
+from isaaclab.actuators import ImplicitActuatorCfg, IdealPDActuatorCfg, DelayedPDActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.utils.math import *
 from booster_rl_tasks.assets.robots.actuator import DelayedImplicitActuatorCfg
@@ -60,7 +60,7 @@ BOOSTER_K1_CFG = ArticulationCfg(
     ),
     soft_joint_pos_limit_factor=0.95,
     actuators={
-        "legs": DelayedImplicitActuatorCfg(
+        "legs": DelayedPDActuatorCfg(
             max_delay=8,
             min_delay=2,
             joint_names_expr=[
@@ -69,13 +69,13 @@ BOOSTER_K1_CFG = ArticulationCfg(
                 ".*_Hip_Yaw",
                 ".*_Knee_Pitch",
             ],
-            effort_limit_sim={
+            effort_limit={
                 ".*_Hip_Pitch": 30.,
                 ".*_Hip_Roll": 35.,
                 ".*_Hip_Yaw": 20.,
                 ".*_Knee_Pitch": 40.,
             },
-            velocity_limit_sim={
+            velocity_limit={
                 ".*_Hip_Pitch": 8.,
                 ".*_Hip_Roll": 12.9,
                 ".*_Hip_Yaw": 18.,
@@ -100,17 +100,17 @@ BOOSTER_K1_CFG = ArticulationCfg(
                 ".*_Knee_Pitch": ARMATURE_6416,
             },
         ),
-        "feet": DelayedImplicitActuatorCfg(
+        "feet": DelayedPDActuatorCfg(
             max_delay=8,
             min_delay=2,
-            effort_limit_sim=20.0,
-            velocity_limit_sim=18.,
+            effort_limit=20.0,
+            velocity_limit=18.,
             joint_names_expr=[".*_Ankle_Pitch", ".*_Ankle_Roll"],
             stiffness=30,
             damping=2.0,
             armature=2.0 * ARMATURE_4310,
         ),
-        "arms": DelayedImplicitActuatorCfg(
+        "arms": DelayedPDActuatorCfg(
             max_delay=8,
             min_delay=2,
             joint_names_expr=[
@@ -119,13 +119,13 @@ BOOSTER_K1_CFG = ArticulationCfg(
                 ".*_Elbow_Pitch",
                 ".*_Elbow_Yaw",
             ],
-            effort_limit_sim={
+            effort_limit={
                 ".*_Shoulder_Pitch": 14.0,
                 ".*_Shoulder_Roll": 14.0,
                 ".*_Elbow_Pitch": 14.0,
                 ".*_Elbow_Yaw": 14.0,
             },
-            velocity_limit_sim={
+            velocity_limit={
                 ".*_Shoulder_Pitch": 18.0,
                 ".*_Shoulder_Roll": 18.0,
                 ".*_Elbow_Pitch": 18.0,
@@ -150,12 +150,12 @@ BOOSTER_K1_CFG = ArticulationCfg(
                 ".*_Elbow_Yaw": ARMATURE_ROB_14,
             },
         ),
-        "head": DelayedImplicitActuatorCfg(
+        "head": DelayedPDActuatorCfg(
             max_delay=8,
             min_delay=2,
             joint_names_expr=[".*Head.*"],
-            effort_limit_sim=6.0,
-            velocity_limit_sim=20.0,
+            effort_limit=6.0,
+            velocity_limit=20.0,
             stiffness=4.0,
             damping=1.0,
             armature=0.001,
@@ -165,7 +165,7 @@ BOOSTER_K1_CFG = ArticulationCfg(
 
 K1_ACTION_SCALE = {}
 for a in BOOSTER_K1_CFG.actuators.values():
-    e = a.effort_limit_sim
+    e = a.effort_limit if a.effort_limit is not None else a.effort_limit_sim
     s = a.stiffness
     names = a.joint_names_expr
     if not isinstance(e, dict):
