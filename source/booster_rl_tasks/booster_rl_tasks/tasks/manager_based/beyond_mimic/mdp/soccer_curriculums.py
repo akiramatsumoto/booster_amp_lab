@@ -36,42 +36,47 @@ class FallRateDomainRandCurriculum(ManagerTermBase):
     3  push ±1.0 m/s  gains scale ×[0.8,1.2]   leg mass add ±0.3~1.0 kg
     """
 
+    # NOTE: values halved from the original "aggressive" set as a
+    # weakened-DR isolation run (diagnosing low contact rate). push/mass/com
+    # are additive → halved directly; friction/gains are scales about 1.0 →
+    # deviation from 1.0 halved. Restore the original set once contact rate is
+    # confirmed to recover.
     LEVELS: list[dict] = [
         # Level 0 — mild baseline (matches EventCfg initial values)
         dict(
-            push_vel=0.4,       push_interval=(6.0, 10.0),
-            trunk_mass=(-0.15,  0.5),
-            leg_mass=(-0.1,     0.2),
-            com_xy=0.03,
-            friction=(0.8,      1.2),
-            gains=(0.9,         1.1),
+            push_vel=0.2,       push_interval=(6.0, 10.0),
+            trunk_mass=(-0.075, 0.25),
+            leg_mass=(-0.05,    0.1),
+            com_xy=0.015,
+            friction=(0.9,      1.1),
+            gains=(0.95,        1.05),
         ),
         # Level 1
         dict(
-            push_vel=0.6,       push_interval=(4.0, 8.0),
-            trunk_mass=(-0.2,   0.7),
-            leg_mass=(-0.15,    0.4),
-            com_xy=0.04,
-            friction=(0.65,     1.4),
-            gains=(0.8,         1.2),
+            push_vel=0.3,       push_interval=(4.0, 8.0),
+            trunk_mass=(-0.1,   0.35),
+            leg_mass=(-0.075,   0.2),
+            com_xy=0.02,
+            friction=(0.825,    1.2),
+            gains=(0.9,         1.1),
         ),
         # Level 2
         dict(
-            push_vel=1.0,       push_interval=(3.0, 6.0),
-            trunk_mass=(-0.3,   0.9),
-            leg_mass=(-0.25,    0.6),
-            com_xy=0.05,
-            friction=(0.5,      1.6),
-            gains=(0.7,         1.3),
+            push_vel=0.5,       push_interval=(3.0, 6.0),
+            trunk_mass=(-0.15,  0.45),
+            leg_mass=(-0.125,   0.3),
+            com_xy=0.025,
+            friction=(0.75,     1.3),
+            gains=(0.85,        1.15),
         ),
-        # Level 3 — full randomization
+        # Level 3 — full randomization (still ~half of the aggressive set)
         dict(
-            push_vel=1.5,       push_interval=(3.0, 6.0),
-            trunk_mass=(-0.4,   1.2),
-            leg_mass=(-0.35,    0.9),
-            com_xy=0.06,
-            friction=(0.4,      1.8),
-            gains=(0.6,         1.4),
+            push_vel=0.75,      push_interval=(3.0, 6.0),
+            trunk_mass=(-0.2,   0.6),
+            leg_mass=(-0.175,   0.45),
+            com_xy=0.03,
+            friction=(0.7,      1.4),
+            gains=(0.8,         1.2),
         ),
     ]
 

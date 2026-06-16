@@ -22,7 +22,8 @@ from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_apply_inverse, quat_from_euler_xyz, yaw_quat
 
 try:
-    from isaaclab.markers import VisualizationMarkers
+    import isaaclab.sim as sim_utils
+    from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
     from isaaclab.markers.config import (
         BLUE_ARROW_X_MARKER_CFG,
         GREEN_ARROW_X_MARKER_CFG,
@@ -31,7 +32,9 @@ try:
 
     _MARKERS_AVAILABLE = True
 except Exception:  # pragma: no cover — headless / minimal envs
+    sim_utils = None  # type: ignore[assignment]
     VisualizationMarkers = None  # type: ignore[assignment]
+    VisualizationMarkersCfg = None  # type: ignore[assignment]
     BLUE_ARROW_X_MARKER_CFG = None  # type: ignore[assignment]
     GREEN_ARROW_X_MARKER_CFG = None  # type: ignore[assignment]
     RED_ARROW_X_MARKER_CFG = None  # type: ignore[assignment]
@@ -192,6 +195,10 @@ class SoccerKickCommand(CommandTerm):
 
         self.metrics["kick_contact_rate"] = torch.zeros(N, device=d)
         self.metrics["kick_success_rate"] = torch.zeros(N, device=d)
+        # V5: fraction of envs currently latched into post-kick stop mode.
+        # Lets us verify in tensorboard that the stop flag actually fires once
+        # kicks start succeeding.
+        self.metrics["stop_mode_active"] = torch.zeros(N, device=d)
         self.metrics["goal_scored_rate"] = torch.zeros(N, device=d)
         self.metrics["pass_landing_rate"] = torch.zeros(N, device=d)
         self.metrics["ball_visible"] = torch.zeros(N, device=d)
@@ -451,6 +458,7 @@ class SoccerKickCommand(CommandTerm):
         # episode achieve X?" signal correctly.
         self.metrics["kick_contact_rate"][:] = self._kick_contact_rate_ema
         self.metrics["kick_success_rate"][:] = self._kick_success_rate_ema
+        self.metrics["stop_mode_active"][:] = self._stop_mode.float()
         self.metrics["goal_scored_rate"][:] = self._goal_scored_rate_ema
         self.metrics["pass_landing_rate"][:] = self._pass_landing_rate_ema
         self.metrics["ball_visible"][:] = self._ball_mask_perceived
@@ -1035,11 +1043,12 @@ class SoccerKickCommand(CommandTerm):
         )
 
         # ----- V5 post-kick stop-mode latch -----------------------------
-        # Once a kick succeeds, latch the env into stop mode for the rest of
-        # the episode. The policy is rewarded for standing still
-        # (``stand_still``) while kick/search shaping is gated off.
+        # Once the foot first contacts the ball, latch the env into stop mode
+        # for the rest of the episode. The policy is rewarded for standing
+        # still (``stand_still``) while kick/search shaping is gated off.
+        # (Latch on first contact rather than kick success.)
         if bool(self.cfg.enable_stop_after_kick):
-            self._stop_mode = self._stop_mode | success_now
+            self._stop_mode = self._stop_mode | new_contact
 
         # ----- V4 multi-attempt support (shoot mode only) ---------------
         # When the ball has come to rest AND the foot is away from it, clear
@@ -1150,27 +1159,48 @@ class SoccerKickCommand(CommandTerm):
                 return
             if not hasattr(self, "_target_dir_marker"):
                 try:
-                    target_cfg = RED_ARROW_X_MARKER_CFG.replace(
-                        prim_path="/Visuals/Command/soccer_kick_target_dir"
+                    show_arrows = bool(getattr(self.cfg, "debug_vis_direction_arrows", False))
+                    if show_arrows:
+                        target_cfg = RED_ARROW_X_MARKER_CFG.replace(
+                            prim_path="/Visuals/Command/soccer_kick_target_dir"
+                        )
+                        goal_cfg = GREEN_ARROW_X_MARKER_CFG.replace(
+                            prim_path="/Visuals/Command/soccer_kick_goal_dir"
+                        )
+                        pass_cfg = BLUE_ARROW_X_MARKER_CFG.replace(
+                            prim_path="/Visuals/Command/soccer_kick_pass_target"
+                        )
+                        self._target_dir_marker = VisualizationMarkers(target_cfg)
+                        self._goal_dir_marker = VisualizationMarkers(goal_cfg)
+                        self._pass_target_marker = VisualizationMarkers(pass_cfg)
+                    else:
+                        self._target_dir_marker = None
+                        self._goal_dir_marker = None
+                        self._pass_target_marker = None
+                    stop_cfg = VisualizationMarkersCfg(
+                        prim_path="/Visuals/Command/soccer_kick_stop_mode",
+                        markers={
+                            "sphere": sim_utils.SphereCfg(
+                                radius=0.09,
+                                visual_material=sim_utils.PreviewSurfaceCfg(
+                                    emissive_color=(1.0, 0.05, 0.05),
+                                    diffuse_color=(1.0, 0.05, 0.05),
+                                ),
+                            ),
+                        },
                     )
-                    goal_cfg = GREEN_ARROW_X_MARKER_CFG.replace(
-                        prim_path="/Visuals/Command/soccer_kick_goal_dir"
-                    )
-                    pass_cfg = BLUE_ARROW_X_MARKER_CFG.replace(
-                        prim_path="/Visuals/Command/soccer_kick_pass_target"
-                    )
-                    self._target_dir_marker = VisualizationMarkers(target_cfg)
-                    self._goal_dir_marker = VisualizationMarkers(goal_cfg)
-                    self._pass_target_marker = VisualizationMarkers(pass_cfg)
+                    self._stop_mode_marker = VisualizationMarkers(stop_cfg)
                 except Exception:  # pragma: no cover — headless fallback
                     self._target_dir_marker = None
                     self._goal_dir_marker = None
                     self._pass_target_marker = None
+                    self._stop_mode_marker = None
                     return
             for m in (
                 getattr(self, "_target_dir_marker", None),
                 getattr(self, "_goal_dir_marker", None),
                 getattr(self, "_pass_target_marker", None),
+                getattr(self, "_stop_mode_marker", None),
             ):
                 if m is not None:
                     try:
@@ -1182,6 +1212,7 @@ class SoccerKickCommand(CommandTerm):
                 getattr(self, "_target_dir_marker", None),
                 getattr(self, "_goal_dir_marker", None),
                 getattr(self, "_pass_target_marker", None),
+                getattr(self, "_stop_mode_marker", None),
             ):
                 if m is not None:
                     try:
@@ -1196,7 +1227,13 @@ class SoccerKickCommand(CommandTerm):
         target_marker = getattr(self, "_target_dir_marker", None)
         goal_marker = getattr(self, "_goal_dir_marker", None)
         pass_marker = getattr(self, "_pass_target_marker", None)
-        if target_marker is None and goal_marker is None and pass_marker is None:
+        stop_marker = getattr(self, "_stop_mode_marker", None)
+        if (
+            target_marker is None
+            and goal_marker is None
+            and pass_marker is None
+            and stop_marker is None
+        ):
             return
 
         d = self.device
@@ -1247,6 +1284,20 @@ class SoccerKickCommand(CommandTerm):
                 pass_yaw = torch.atan2(pass_vec_y, pass_vec_x)
                 pass_quat = quat_from_euler_xyz(zeros, zeros, pass_yaw)
                 pass_marker.visualize(translations=pass_pos, orientations=pass_quat)
+        except Exception:  # pragma: no cover
+            pass
+
+        # --- Stop-mode indicator (red sphere above the head) -------------
+        # Shown only for envs currently latched into post-kick stop mode;
+        # other envs are scaled to zero so the sphere disappears. Lets you
+        # see at a glance which robots have latched ``stop_mode`` during play.
+        try:
+            if stop_marker is not None:
+                stop_pos = self._robot_pos_w.clone()
+                stop_pos[:, 2] = stop_pos[:, 2] + 0.9
+                on = self._stop_mode.float().unsqueeze(-1)
+                stop_scales = on.expand(N, 3)
+                stop_marker.visualize(translations=stop_pos, scales=stop_scales)
         except Exception:  # pragma: no cover
             pass
 
@@ -1366,6 +1417,12 @@ class SoccerKickCommandCfg(CommandTermCfg):
     # kicking behaviour. At deploy time the ``stop_flag`` observation input is
     # driven externally to switch between kick and stand-still on demand.
     enable_stop_after_kick: bool = True
+
+    # Debug-vis sub-toggles (only matter when ``debug_vis=True``). The
+    # direction arrows (target / goal / pass) render as large stretched arrows
+    # that clutter the view; default them off so enabling ``debug_vis`` shows
+    # only the post-kick stop-mode sphere above the head.
+    debug_vis_direction_arrows: bool = False
 
 
 def _uniform(lo: float, hi: float, *, n: int, device: torch.device) -> torch.Tensor:

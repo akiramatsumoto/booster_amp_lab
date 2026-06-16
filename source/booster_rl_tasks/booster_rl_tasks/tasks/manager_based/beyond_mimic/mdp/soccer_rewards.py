@@ -920,15 +920,23 @@ def stand_still(
     command_name: str = "soccer_kick",
     lin_sigma: float = 0.5,
     ang_sigma: float = 0.5,
+    grace_steps: int = 25,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     """Reward standing still while the env is in post-kick stop mode.
 
-    V5. Active only when ``cmd.stop_mode`` is set (latched on the first
-    successful kick). Rewards low base horizontal linear speed and low base
-    yaw rate via a Gaussian kernel, so the policy settles in place after the
-    kick instead of chasing the ball. Returns 0 in kick mode, so this term
-    never competes with the approach/kick shaping before the kick.
+    V5. Active only when ``cmd.stop_mode`` is set (latched on the first kick
+    contact). Rewards low base horizontal linear speed and low base yaw rate
+    via a Gaussian kernel, so the policy settles in place after the kick
+    instead of chasing the ball. Returns 0 in kick mode, so this term never
+    competes with the approach/kick shaping before the kick.
+
+    ``grace_steps`` delays the stillness demand by that many control steps
+    after contact (``steps_since_kick``). Since the latch fires on the contact
+    step — the most dynamically unstable moment (one foot planted, kicking leg
+    mid-swing) — demanding an instant base stop made the robot brake mid-kick
+    and fall. The grace window lets the kick follow-through and balance
+    recovery finish before the stand-still pressure kicks in.
 
     Shape: (num_envs,) in ``[0, 1]``.
     """
@@ -939,12 +947,14 @@ def stand_still(
     settle = torch.exp(-(lin_speed**2) / (lin_sigma**2)) * torch.exp(
         -(yaw_rate**2) / (ang_sigma**2)
     )
-    return cmd.stop_mode.float() * settle
+    after_grace = (cmd.steps_since_kick >= int(grace_steps)).float()
+    return cmd.stop_mode.float() * after_grace * settle
 
 
 def joint_deviation_in_stop(
     env: "ManagerBasedRLEnv",
     command_name: str = "soccer_kick",
+    grace_steps: int = 25,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     """L1 deviation of all joints from their default pose, gated on stop mode.
@@ -956,6 +966,11 @@ def joint_deviation_in_stop(
     the kicking motion. Use a *negative* weight (it returns a non-negative
     deviation magnitude).
 
+    Like ``stand_still`` it honors ``grace_steps``: the return-to-default
+    demand is suppressed for ``grace_steps`` control steps after contact so the
+    kicking leg can finish its swing without being penalized for leaving the
+    default pose mid-kick.
+
     Shape: (num_envs,).
     """
     cmd = _cmd(env, command_name)
@@ -965,7 +980,8 @@ def joint_deviation_in_stop(
         - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
     )
     deviation = torch.sum(torch.abs(angle), dim=1)
-    return cmd.stop_mode.float() * deviation
+    after_grace = (cmd.steps_since_kick >= int(grace_steps)).float()
+    return cmd.stop_mode.float() * after_grace * deviation
 
 
 def alive_reward(env: "ManagerBasedRLEnv") -> torch.Tensor:

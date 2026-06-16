@@ -180,6 +180,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.disable_push and hasattr(env_cfg, "events") and hasattr(env_cfg.events, "push_robot"):
         env_cfg.events.push_robot = None
 
+    # enable command-term debug markers during play / recording (target / goal /
+    # pass arrows + post-kick stop-mode sphere). They default to ``debug_vis=False``
+    # so training stays fast; here we force them on so they show up in the viewer
+    # and in recorded video.
+    if getattr(env_cfg, "commands", None) is not None:
+        for _term_name in vars(env_cfg.commands):
+            _term = getattr(env_cfg.commands, _term_name)
+            if hasattr(_term, "debug_vis"):
+                _term.debug_vis = True
+
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
@@ -358,6 +368,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     timestep = 0
     dones = None
 
+    # Optional soccer-kick command term, used to log post-kick stop-mode state.
+    soccer_cmd_term = None
+    try:
+        soccer_cmd_term = env.unwrapped.command_manager.get_term("soccer_kick")
+    except Exception:
+        soccer_cmd_term = None
+    prev_ball_spd = None
+
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
@@ -404,6 +422,31 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 obs = _get_policy_obs()
             if bridge is not None and bridge.apply_soccer_controls():
                 obs = _get_policy_obs()
+        # log post-kick stop-mode state + kick-contact diagnostics every step
+        if soccer_cmd_term is not None and hasattr(soccer_cmd_term, "stop_mode"):
+            stop_mode = soccer_cmd_term.stop_mode
+            n_stop = int(stop_mode.sum().item())
+            on_envs = stop_mode.nonzero(as_tuple=False).flatten().tolist()
+            # diagnostics for env 0: why has contact (hence stop_mode) not latched?
+            ball_speed = float(
+                torch.linalg.norm(soccer_cmd_term.ball_vel_w[0, :2]).item()
+            )
+            foot_pos = soccer_cmd_term.robot.data.body_pos_w[0, soccer_cmd_term._foot_ids, :]
+            min_fb = float(
+                torch.linalg.norm(foot_pos - soccer_cmd_term.ball_pos_w[0], dim=-1).min().item()
+            )
+            contact = bool(soccer_cmd_term.kick_contact_awarded[0].item())
+            ssk = int(soccer_cmd_term.steps_since_kick[0].item())
+            # only log when the ball speed changes (rounded to 2 decimals)
+            ball_spd_r = round(ball_speed, 2)
+            if prev_ball_spd is None or ball_spd_r != prev_ball_spd:
+                print(
+                    f"[INFO] stop={n_stop}/{stop_mode.numel()} on={on_envs} | "
+                    f"ball_spd={ball_speed:.2f} min_foot_ball={min_fb:.2f} "
+                    f"contact={contact} ssk={ssk}"
+                )
+                prev_ball_spd = ball_spd_r
+
         if bridge is not None:
             bridge.update()
         if args_cli.video:

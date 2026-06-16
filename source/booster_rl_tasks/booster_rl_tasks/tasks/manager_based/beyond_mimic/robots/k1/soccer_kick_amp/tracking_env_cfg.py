@@ -110,6 +110,11 @@ class CommandsCfg:
         # ball-XY-speed rarely exceeded 1.5 m/s on first-touch).
         kick_ball_speed_thresh=1.0,
         kick_success_speed_thresh=1.5,
+        # Foot-link origin ↔ ball-center distance bottoms out at ~0.21 m at
+        # contact (ball radius 0.11 m + foot-origin inset), so the default
+        # 0.20 m proximity gate never fires even on a clean kick. Widen it so
+        # ``kick_contact`` / ``stop_mode`` latch on real contacts.
+        kick_foot_proximity=0.30,
     )
 
 
@@ -297,8 +302,8 @@ class EventCfg:
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.6, 1.2),
-            "dynamic_friction_range": (0.6, 1.2),
+            "static_friction_range": (0.75, 1.05),
+            "dynamic_friction_range": (0.75, 1.05),
             "restitution_range": (0.0, 0.05),
             "num_buckets": 64,
         },
@@ -330,7 +335,7 @@ class EventCfg:
         func=mdp.push_by_setting_velocity,
         mode="interval",
         interval_range_s=(6.0, 10.0),
-        params={"velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)}},
+        params={"velocity_range": {"x": (-0.2, 0.2), "y": (-0.2, 0.2)}},
     )
     # --- Curriculum-controlled reset-mode events ---
     # All start at Level 0 (mild). FallRateDomainRandCurriculum widens
@@ -340,7 +345,7 @@ class EventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="Trunk"),
-            "mass_distribution_params": (-0.1, 0.3),
+            "mass_distribution_params": (-0.075, 0.25),
             "operation": "add",
         },
     )
@@ -349,7 +354,7 @@ class EventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="Trunk"),
-            "com_range": {"x": (-0.02, 0.02), "y": (-0.02, 0.02), "z": (-0.005, 0.005)},
+            "com_range": {"x": (-0.015, 0.015), "y": (-0.015, 0.015), "z": (-0.00375, 0.00375)},
         },
     )
     randomize_leg_mass = EventTerm(
@@ -468,24 +473,27 @@ class RewardsCfg:
     )
     pelvis_orientation = RewTerm(
         func=mdp.soccer_rewards.pelvis_orientation_penalty,
-        weight=-1.0,
+        weight=-5.0,
     )
     # ---- V5 post-kick stop mode ----
     # Rewards standing still once the env latches into stop mode after a
     # successful kick. Zero before the kick, so it never fights the approach
     # / kick shaping. Paired with the ``stop_flag`` observation so the same
     # input can command stand-still vs. kick at deploy time.
+    # ``grace_steps`` delays the stop-mode stillness demand until the kick
+    # follow-through / balance recovery has finished (stop_mode now latches on
+    # the contact step, which is the most unstable moment). 25 steps ≈ 0.5 s.
     stand_still = RewTerm(
         func=mdp.soccer_rewards.stand_still,
         weight=4.0,
-        params={"command_name": "soccer_kick"},
+        params={"command_name": "soccer_kick", "grace_steps": 25},
     )
     # Whole-body return to default pose once stopped — base velocity alone is
     # not enough to keep a clean standing posture (negative weight).
     stop_joint_deviation = RewTerm(
         func=mdp.soccer_rewards.joint_deviation_in_stop,
         weight=-0.5,
-        params={"command_name": "soccer_kick"},
+        params={"command_name": "soccer_kick", "grace_steps": 25},
     )
     alive = RewTerm(func=mdp.soccer_rewards.alive_reward, weight=0.5)
     terminated = RewTerm(func=mdp.soccer_rewards.terminated_penalty, weight=-20.0)
