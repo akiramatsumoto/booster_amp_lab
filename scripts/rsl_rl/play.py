@@ -298,13 +298,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print("[INFO] Headless mode and no video recording. Exiting after model export.")
         env.close()
         return
-    
-    import numpy as np, torch
-    cpp_obs = np.array([[0.012028,-0.021857,-0.029539,0.012711,0.000017,-0.999919,-0.050921,0.004236,-0.027942,-0.214348,-2.160406,-1.331591,0.040334,0.160501,0.539309,1.289309,-0.001009,-0.006300,-0.000345,-0.000062,-0.011757,0.006390,0.000980,0.001670,-0.000465,-0.000111,-0.013709,-0.001578,3.751725,-0.244835,1.647524,-4.093526,11.674592,-11.710138,1.931394,-4.162919,10.154390,10.882253,0.092154,-0.108915,0.004343,-0.040068,-0.068905,0.092541,0.089923,-0.109300,0.005101,-0.040947,-0.063124,0.096393,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.497276,-0.006707,1.0,0.0,0.999955,-0.009482,0.8,1.0]], dtype=np.float32)
-    xt = torch.from_numpy(cpp_obs).to(env.unwrapped.device)
-    with torch.no_grad():
-        a = policy(xt).cpu().numpy()
-    print("[CPP-OBS] act_max =", np.abs(a).max())
 
 
     dt = env.unwrapped.step_dt
@@ -364,15 +357,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     obs = _get_policy_obs()
     timestep = 0
     dones = None
-
-    iso = _get_policy_obs()[0].detach().cpu().numpy()
-    print("[ISAAC-OBS]", np.array2string(iso, separator=",", max_line_width=999))
-
-    diff = np.abs(cpp_obs[0] - iso)
-    labels = [(0,3,"ang_vel"),(3,6,"proj_grav"),(6,28,"jpos_rel"),
-            (28,50,"jvel"),(50,72,"last_act"),(72,80,"task")]
-    for lo,hi,name in labels:
-        print(f"{name:10s} max|Δ|={diff[lo:hi].max():.4f}")
 
     # simulate environment
     while simulation_app.is_running():
