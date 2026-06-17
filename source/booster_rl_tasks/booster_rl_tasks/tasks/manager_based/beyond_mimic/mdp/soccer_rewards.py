@@ -984,6 +984,26 @@ def joint_deviation_in_stop(
     return cmd.stop_mode.float() * after_grace * deviation
 
 
+def post_kick_alive(
+    env: "ManagerBasedRLEnv",
+    command_name: str = "soccer_kick",
+) -> torch.Tensor:
+    """Explicit per-step survival bonus once the env is in post-kick stop mode.
+
+    Returns 1.0 every step ``cmd.stop_mode`` is set (latched on the first kick
+    contact), 0 otherwise. Unlike the whole-episode ``alive_reward`` this pays
+    only *after* the kick, so it directly rewards staying upright through the
+    follow-through and the rest of the episode. A fall ends the episode and
+    forfeits this stream, making "kick then stay on your feet" strictly more
+    valuable than "kick then fall". No grace gate — survival is rewarded from
+    the contact step onward (we want it upright during the unstable phase too).
+
+    Use a positive weight. Shape: (num_envs,) in ``{0, 1}``.
+    """
+    cmd = _cmd(env, command_name)
+    return cmd.stop_mode.float()
+
+
 def alive_reward(env: "ManagerBasedRLEnv") -> torch.Tensor:
     return torch.ones(env.num_envs, device=env.device)
 

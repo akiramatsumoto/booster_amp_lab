@@ -495,6 +495,15 @@ class RewardsCfg:
         weight=-0.5,
         params={"command_name": "soccer_kick", "grace_steps": 25},
     )
+    # Explicit post-kick survival bonus: rewards staying upright every step
+    # after the kick (stop_mode). A fall forfeits this stream, so it directly
+    # discourages "kick then fall". Active from the contact step (no grace) so
+    # it also helps the policy survive the unstable follow-through.
+    post_kick_alive = RewTerm(
+        func=mdp.soccer_rewards.post_kick_alive,
+        weight=5.0,
+        params={"command_name": "soccer_kick"},
+    )
     alive = RewTerm(func=mdp.soccer_rewards.alive_reward, weight=0.5)
     terminated = RewTerm(func=mdp.soccer_rewards.terminated_penalty, weight=-20.0)
 
