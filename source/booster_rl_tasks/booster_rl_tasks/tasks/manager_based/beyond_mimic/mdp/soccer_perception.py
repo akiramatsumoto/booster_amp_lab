@@ -87,6 +87,34 @@ class VirtualPerceptionCfg:
     """Per-episode probability that an env is fully blind for the entire
     episode (detection_prob forced to 0)."""
 
+    # ----------------------------------------------------------- occlusion
+    # Temporal occlusion: contiguous dropout streaks that model the ball being
+    # briefly hidden (by the robot's own body/hands, another player, etc.).
+    # Distinct from the per-step Bernoulli dropout — once an event starts, the
+    # ball is forced undetected for a whole sampled duration.
+    occlusion_prob: float = 0.002
+    """Per-step hazard probability of *starting* a new occlusion event on an
+    env that is not already occluded. 0 disables temporal occlusion.
+    At the 0.02 s control step this is ~1 event per 10 s."""
+
+    occlusion_duration_range: tuple[float, float] = (0.2, 0.8)
+    """Uniform range (s) for the duration of each occlusion event."""
+
+    # -------------------------------------------------------- FOV dead zone
+    # Static blind region inside the FOV (smudged lens / fixed occluder /
+    # self-body in view). Sampled per episode in the camera angular frame:
+    # whenever the ball's (yaw, pitch) falls inside the rectangle it is
+    # undetected, even if otherwise in-FOV and in-range. Unlike temporal
+    # occlusion, the ball reappears as soon as it leaves the dead region.
+    deadzone_prob: float = 0.5
+    """Per-episode probability that an env has a FOV dead zone."""
+
+    deadzone_half_h_range: tuple[float, float] = (0.10, 0.30)
+    """Dead-zone half-width as a fraction of the horizontal FOV half-angle."""
+
+    deadzone_half_v_range: tuple[float, float] = (0.10, 0.30)
+    """Dead-zone half-height as a fraction of the vertical FOV half-angle."""
+
     # -------------------------------------------------------------- xy noise
     noise_a: float = 0.05
     """Linear coefficient in distance-dependent noise model sigma(d) = a*d + b."""
@@ -250,6 +278,16 @@ class VirtualPerception:
         self._update_period_steps = torch.ones(N, dtype=torch.long, device=d)
         self._steps_since_update = torch.zeros(N, dtype=torch.long, device=d)
 
+        # Temporal occlusion: steps remaining in the active occlusion event.
+        self._occlusion_steps_remaining = torch.zeros(N, dtype=torch.long, device=d)
+
+        # Static per-episode FOV dead zone (camera angular frame, radians).
+        self._deadzone_active = torch.zeros(N, dtype=torch.bool, device=d)
+        self._deadzone_yaw_c = torch.zeros(N, dtype=torch.float32, device=d)
+        self._deadzone_pitch_c = torch.zeros(N, dtype=torch.float32, device=d)
+        self._deadzone_yaw_h = torch.zeros(N, dtype=torch.float32, device=d)
+        self._deadzone_pitch_h = torch.zeros(N, dtype=torch.float32, device=d)
+
         # Ring buffer (head -> newest entry) -------------------------------
         self._buffer_pos = torch.zeros(cfg.buffer_size, N, 2, dtype=torch.float32, device=d)
         self._buffer_mask = torch.zeros(cfg.buffer_size, N, dtype=torch.float32, device=d)
@@ -264,6 +302,8 @@ class VirtualPerception:
         self._ball_mask = torch.zeros(N, dtype=torch.float32, device=d)
         self._last_seen_dt = torch.zeros(N, dtype=torch.float32, device=d)
         self._in_fov = torch.zeros(N, dtype=torch.float32, device=d)
+        self._occluded = torch.zeros(N, dtype=torch.float32, device=d)
+        self._in_deadzone = torch.zeros(N, dtype=torch.float32, device=d)
         self._range_prob = torch.zeros(N, dtype=torch.float32, device=d)
         self._detect_prob = torch.zeros(N, dtype=torch.float32, device=d)
         self._raw_detected = torch.zeros(N, dtype=torch.float32, device=d)
@@ -286,12 +326,15 @@ class VirtualPerception:
         self._buffer_pos[:, env_ids] = 0.0
         self._buffer_mask[:, env_ids] = 0.0
         self._steps_since_update[env_ids] = 0
+        self._occlusion_steps_remaining[env_ids] = 0
         self._last_pos[env_ids] = 0.0
         self._last_mask[env_ids] = 0.0
         self._ball_pos_b[env_ids] = 0.0
         self._ball_mask[env_ids] = 0.0
         self._last_seen_dt[env_ids] = 0.0
         self._in_fov[env_ids] = 0.0
+        self._occluded[env_ids] = 0.0
+        self._in_deadzone[env_ids] = 0.0
         self._range_prob[env_ids] = 0.0
         self._detect_prob[env_ids] = 0.0
         self._raw_detected[env_ids] = 0.0
@@ -343,6 +386,26 @@ class VirtualPerception:
             (period_s / self.dt).round().long().clamp_min_(1)
         )
 
+        # Per-episode FOV dead zone (camera angular frame). Sample a half-size,
+        # then a center such that the box stays fully inside the FOV.
+        if cfg.deadzone_prob > 0.0:
+            active = torch.rand(n, device=self.device) < cfg.deadzone_prob
+            yaw_h = _uniform(*cfg.deadzone_half_h_range) * self._fov_h_half
+            pitch_h = _uniform(*cfg.deadzone_half_v_range) * self._fov_v_half
+            yaw_c = (torch.rand(n, device=self.device) * 2.0 - 1.0) * (
+                self._fov_h_half - yaw_h
+            )
+            pitch_c = (torch.rand(n, device=self.device) * 2.0 - 1.0) * (
+                self._fov_v_half - pitch_h
+            )
+            self._deadzone_active[env_ids] = active
+            self._deadzone_yaw_c[env_ids] = yaw_c
+            self._deadzone_pitch_c[env_ids] = pitch_c
+            self._deadzone_yaw_h[env_ids] = yaw_h
+            self._deadzone_pitch_h[env_ids] = pitch_h
+        else:
+            self._deadzone_active[env_ids] = False
+
     # ----------------------------------------------------------------- update
     @torch.no_grad()
     def update(self, robot: "Articulation", ball_pos_w: torch.Tensor) -> None:
@@ -381,6 +444,17 @@ class VirtualPerception:
         yaw = torch.atan2(by, bx)
         pitch = torch.atan2(bz, bx)
         in_fov = forward & (yaw.abs() < self._fov_h_half) & (pitch.abs() < self._fov_v_half)
+
+        # ----- FOV dead zone (static per-episode blind region) ----------
+        # A ball inside the angular rectangle is blocked even though it is
+        # geometrically in-FOV. Reappears as soon as it leaves the region.
+        in_dead = (
+            self._deadzone_active
+            & ((yaw - self._deadzone_yaw_c).abs() < self._deadzone_yaw_h)
+            & ((pitch - self._deadzone_pitch_c).abs() < self._deadzone_pitch_h)
+        )
+        self._in_deadzone = in_dead.float()
+        in_fov = in_fov & (~in_dead)
         self._in_fov = in_fov.float()
 
         # ----- Range probability (linear falloff) -----------------------
@@ -393,8 +467,33 @@ class VirtualPerception:
             ),
         )
 
+        # ----- Temporal occlusion (contiguous dropout streaks) ----------
+        # Decrement active timers, then start new events on currently-clear
+        # envs at the per-step hazard rate. While occluded, detection is
+        # forced to zero for the whole sampled duration.
+        if cfg.occlusion_prob > 0.0:
+            was_active = self._occlusion_steps_remaining > 0
+            self._occlusion_steps_remaining = (
+                self._occlusion_steps_remaining - 1
+            ).clamp_min(0)
+            start = (~was_active) & (torch.rand(N, device=d) < cfg.occlusion_prob)
+            lo, hi = cfg.occlusion_duration_range
+            dur_steps = (
+                (torch.rand(N, device=d) * (hi - lo) + lo) / self.dt
+            ).round().long().clamp_min(1)
+            self._occlusion_steps_remaining = torch.where(
+                start, dur_steps, self._occlusion_steps_remaining
+            )
+            occluded = self._occlusion_steps_remaining > 0
+        else:
+            occluded = torch.zeros(N, dtype=torch.bool, device=d)
+        self._occluded = occluded.float()
+
         # ----- Bernoulli detection --------------------------------------
-        p_detect = self._detection_prob_per_env * range_prob * in_fov.float()
+        p_detect = (
+            self._detection_prob_per_env * range_prob * in_fov.float()
+            * (~occluded).float()
+        )
         detected = torch.bernoulli(p_detect.clamp(0.0, 1.0)) > 0.5
         detected_f = detected.float()
         self._range_prob = range_prob.clamp(0.0, 1.0)
@@ -477,6 +576,16 @@ class VirtualPerception:
     def in_fov(self) -> torch.Tensor:
         """Current, non-latent FOV gate before Bernoulli/dropout."""
         return self._in_fov
+
+    @property
+    def occluded(self) -> torch.Tensor:
+        """Current temporal-occlusion gate (1 while an occlusion event is active)."""
+        return self._occluded
+
+    @property
+    def in_deadzone(self) -> torch.Tensor:
+        """Current FOV dead-zone gate (1 while the ball sits in the blind region)."""
+        return self._in_deadzone
 
     @property
     def range_prob(self) -> torch.Tensor:

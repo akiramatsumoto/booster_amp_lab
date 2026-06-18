@@ -203,6 +203,8 @@ class SoccerKickCommand(CommandTerm):
         self.metrics["pass_landing_rate"] = torch.zeros(N, device=d)
         self.metrics["ball_visible"] = torch.zeros(N, device=d)
         self.metrics["ball_in_fov"] = torch.zeros(N, device=d)
+        self.metrics["ball_occluded"] = torch.zeros(N, device=d)
+        self.metrics["ball_in_deadzone"] = torch.zeros(N, device=d)
         self.metrics["ball_detect_prob"] = torch.zeros(N, device=d)
         self.metrics["ball_raw_detected"] = torch.zeros(N, device=d)
         self.metrics["last_seen_dt"] = torch.zeros(N, device=d)
@@ -464,10 +466,14 @@ class SoccerKickCommand(CommandTerm):
         self.metrics["ball_visible"][:] = self._ball_mask_perceived
         if self._perception is not None:
             self.metrics["ball_in_fov"][:] = self._perception.in_fov
+            self.metrics["ball_occluded"][:] = self._perception.occluded
+            self.metrics["ball_in_deadzone"][:] = self._perception.in_deadzone
             self.metrics["ball_detect_prob"][:] = self._perception.detect_prob
             self.metrics["ball_raw_detected"][:] = self._perception.raw_detected
         else:
             self.metrics["ball_in_fov"][:] = 1.0
+            self.metrics["ball_occluded"][:] = 0.0
+            self.metrics["ball_in_deadzone"][:] = 0.0
             self.metrics["ball_detect_prob"][:] = 1.0
             self.metrics["ball_raw_detected"][:] = 1.0
         self.metrics["last_seen_dt"][:] = self._last_seen_dt_buf
