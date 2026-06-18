@@ -4,130 +4,196 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-"""Functions to specify the symmetry in the observation and action space for ANYmal."""
+"""Left-right symmetry augmentation for the Booster K1 soccer-kick task.
+
+This implements the ``data_augmentation_func`` consumed by the (AMP) PPO
+algorithm in the vendored ``rsl_rl`` fork. For every sample it appends a
+single mirror-image copy (left <-> right) of the observation and action,
+doubling the batch. Training the policy on both halves makes it symmetric, so
+it can kick equally well with either foot.
+
+The mirror is a reflection across the robot's sagittal plane (body x-z plane,
+i.e. ``y -> -y``):
+
+  * Linear vectors (lin vel, gravity, ball position/velocity) flip the lateral
+    (y) component.
+  * Angular velocity (a pseudovector) flips x and z.
+  * 2D body-frame directions (target dir, goal dir, ...) flip the 2nd (y/sin)
+    component.
+  * Joint quantities (joint pos/vel, last action, and the action vector) swap
+    the left and right joints; roll/yaw joints additionally negate while pitch
+    joints keep their sign. The roll/yaw negation is verified by the robot's
+    own symmetric default pose (``Left_Shoulder_Roll = -Right_Shoulder_Roll``,
+    ``Left_Elbow_Yaw = -Right_Elbow_Yaw``).
+
+The transform is built lazily from the live observation-term layout
+(``env.observation_manager``) and the articulation joint names, so it stays
+correct regardless of the runtime joint ordering or obs concatenation order.
+"""
 
 from __future__ import annotations
 
-import torch
 from typing import TYPE_CHECKING
 
+import torch
+
 if TYPE_CHECKING:
-    from omni.isaac.lab.envs import ManagerBasedRLEnv
+    from isaaclab.envs import ManagerBasedRLEnv
 
 # specify the functions that are available for import
 __all__ = ["compute_symmetric_states"]
 
 
+# Per-term, per-dimension sign multipliers for the left-right mirror. Terms not
+# listed here (scalars, masks, flags, distances) are left unchanged. Joint
+# terms are handled separately via the joint permutation.
+_VEC3_FLIP_Y = (1.0, -1.0, 1.0)   # linear vec3: flip lateral (y)
+_ANGVEL_FLIP = (-1.0, 1.0, -1.0)  # angular vel pseudovector: flip x, z
+_DIR2_FLIP_Y = (1.0, -1.0)        # 2D body-frame pos/dir: flip 2nd component
+
+_TERM_SIGN_FLIP: dict[str, tuple[float, ...]] = {
+    "base_lin_vel": _VEC3_FLIP_Y,
+    "base_ang_vel": _ANGVEL_FLIP,
+    "projected_gravity": _VEC3_FLIP_Y,
+    "ball_pos_b": _DIR2_FLIP_Y,
+    "ball_pos_b_gt": _VEC3_FLIP_Y,
+    "ball_vel_b_gt": _VEC3_FLIP_Y,
+    "goal_pos_b": _DIR2_FLIP_Y,
+    "goal_dir_b": _DIR2_FLIP_Y,
+    "target_dir_b": _DIR2_FLIP_Y,
+    "pass_target_dir_b": _DIR2_FLIP_Y,
+}
+
+# Observation terms that hold per-joint values in articulation order.
+_JOINT_TERMS = {"joint_pos", "joint_vel", "actions", "last_action"}
+
+# Per-env transform cache, keyed by id(base_env).
+_CACHE: dict[int, dict] = {}
+
+
+def _build_joint_mirror(joint_names: list[str]) -> tuple[list[int], list[float]]:
+    """Build the left-right joint permutation and sign-flip from joint names.
+
+    Returns ``(perm, sign)`` such that the mirrored joint vector is
+    ``out[i] = sign[i] * in[perm[i]]``.
+    """
+    name_to_idx = {nm: i for i, nm in enumerate(joint_names)}
+    perm = list(range(len(joint_names)))
+    sign = [1.0] * len(joint_names)
+    for i, nm in enumerate(joint_names):
+        # Mirror partner: swap Left <-> Right (handles ALeft/ARight prefixes).
+        if "Left" in nm:
+            partner = nm.replace("Left", "Right")
+        elif "Right" in nm:
+            partner = nm.replace("Right", "Left")
+        else:
+            partner = nm  # midline joints (head) map to themselves
+        perm[i] = name_to_idx.get(partner, i)
+        # Roll / yaw joints are anti-symmetric under a left-right mirror.
+        low = nm.lower()
+        if "roll" in low or "yaw" in low:
+            sign[i] = -1.0
+    return perm, sign
+
+
+def _build_group_transform(
+    base_env: "ManagerBasedRLEnv",
+    obs_type: str,
+    device: torch.device,
+    jperm: list[int],
+    jsign: list[float],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Build a flat gather-index + multiplier for one observation group.
+
+    Returns ``(idx, mult)`` so that ``mirror = obs[:, idx] * mult``.
+    """
+    om = base_env.observation_manager
+    term_names = om.active_terms[obs_type]
+    term_dims = om.group_obs_term_dim[obs_type]
+    num_joints = len(jperm)
+
+    total = sum(int(shape[0]) for shape in term_dims)
+    idx = torch.arange(total, device=device, dtype=torch.long)
+    mult = torch.ones(total, device=device)
+    jperm_t = torch.tensor(jperm, device=device, dtype=torch.long)
+    jsign_t = torch.tensor(jsign, device=device)
+
+    off = 0
+    for name, shape in zip(term_names, term_dims):
+        dim = int(shape[0])
+        if name in _JOINT_TERMS:
+            if dim != num_joints:
+                raise ValueError(
+                    f"Symmetry: joint term '{name}' has dim {dim}, expected {num_joints}."
+                )
+            idx[off : off + dim] = off + jperm_t
+            mult[off : off + dim] = jsign_t
+        elif name in _TERM_SIGN_FLIP:
+            flip = _TERM_SIGN_FLIP[name]
+            if dim != len(flip):
+                raise ValueError(
+                    f"Symmetry: term '{name}' has dim {dim}, expected {len(flip)}."
+                )
+            mult[off : off + dim] = torch.tensor(flip, device=device)
+        # else: identity (scalars / masks / flags)
+        off += dim
+    return idx, mult
+
+
 @torch.no_grad()
 def compute_symmetric_states(
-    env: ManagerBasedRLEnv,
+    env: "ManagerBasedRLEnv",
     obs: torch.Tensor | None = None,
     actions: torch.Tensor | None = None,
-    obs_type: str = "critic",
+    obs_type: str = "policy",
 ):
+    """Append a left-right mirror copy to the observations and/or actions.
 
+    Args:
+        env: The (wrapped) environment instance.
+        obs: Observation tensor for ``obs_type`` group, shape (B, obs_dim).
+        actions: Action tensor, shape (B, num_joints).
+        obs_type: Which observation group ``obs`` belongs to ("policy"/"critic").
+
+    Returns:
+        ``(obs_aug, actions_aug)`` with batch size doubled (original first,
+        mirror second). Either may be None if its input was None.
+    """
+    base_env = getattr(env, "unwrapped", env)
+    cache = _CACHE.setdefault(id(base_env), {})
+
+    if "joint" not in cache:
+        robot = base_env.scene["robot"]
+        cache["joint"] = _build_joint_mirror(list(robot.joint_names))
+    jperm, jsign = cache["joint"]
 
     # observations
     if obs is not None:
-        num_envs = obs.shape[0]
-        # since we have 4 different symmetries, we need to augment the batch size by 4
-        obs_aug = torch.zeros(num_envs * 2, obs.shape[1], device=obs.device)
-        # -- original
-        obs_aug[:num_envs] = obs[:]
-        # -- front-back
-        obs_aug[num_envs : 2 * num_envs] = _transform_obs_front_back(env.unwrapped, obs, obs_type)
-
+        key = ("group", obs_type)
+        if key not in cache:
+            cache[key] = _build_group_transform(base_env, obs_type, obs.device, jperm, jsign)
+        idx, mult = cache[key]
+        obs_mirror = obs[:, idx] * mult
+        obs_aug = torch.cat([obs, obs_mirror], dim=0)
     else:
         obs_aug = None
 
-    # actions
+    # actions (joint-space)
     if actions is not None:
-        num_envs = actions.shape[0]
-        # since we have 4 different symmetries, we need to augment the batch size by 4
-        actions_aug = torch.zeros(num_envs * 2, actions.shape[1], device=actions.device)
-        # -- original
-        actions_aug[:num_envs] = actions[:]
-        actions_aug[num_envs : 2 * num_envs] = _transform_actions_front_back(actions)
-
+        akey = "action"
+        if akey not in cache:
+            cache[akey] = (
+                torch.tensor(jperm, device=actions.device, dtype=torch.long),
+                torch.tensor(jsign, device=actions.device),
+            )
+        ap, asg = cache[akey]
+        if actions.shape[1] != ap.shape[0]:
+            raise ValueError(
+                f"Symmetry: action dim {actions.shape[1]} != num_joints {ap.shape[0]}."
+            )
+        act_mirror = actions[:, ap] * asg
+        actions_aug = torch.cat([actions, act_mirror], dim=0)
     else:
         actions_aug = None
 
     return obs_aug, actions_aug
-
-
-
-def _transform_obs_front_back(env: ManagerBasedRLEnv, obs: torch.Tensor, obs_type: str = "policy") -> torch.Tensor:
-    """Applies a front-back symmetry transformation to the observation tensor.
-
-    This function modifies the given observation tensor by applying transformations
-    that represent a symmetry with respect to the front-back axis. This includes negating
-    certain components of the linear and angular velocities, projected gravity, velocity commands,
-    and flipping the joint positions, joint velocities, and last actions for the ANYmal robot.
-    Additionally, if height-scan data is present, it is flipped along the relevant dimension.
-
-    Args:
-        env: The environment instance from which the observation is obtained.
-        obs: The observation tensor to be transformed.
-        obs_type: The type of observation to augment. Defaults to "policy".
-
-    Returns:
-        The transformed observation tensor with front-back symmetry applied.
-    """
-    # copy observation tensor
-    obs = obs.clone()
-    device = obs.device
-    # lin vel
-    obs[:, :3] = obs[:, :3] * torch.tensor([-1, 1, 1], device=device)
-    # ang vel
-    obs[:, 3:6] = obs[:, 3:6] * torch.tensor([1, -1, -1], device=device)
-    # projected gravity
-    obs[:, 6:9] = obs[:, 6:9] * torch.tensor([-1, 1, 1], device=device)
-    # velocity command
-    obs[:, 9:12] = obs[:, 9:12] * torch.tensor([-1, 1, -1], device=device)
-    # joint pos
-    obs[:, 12:34] = _switch_anymal_joints_front_back(obs[:, 12:34])
-    # joint vel
-    obs[:, 34:56] = _switch_anymal_joints_front_back(obs[:, 34:56])
-    # last actions
-    obs[:, 56:78] = _switch_anymal_joints_front_back(obs[:, 56:78])
-
-    # height-scan
-    if obs_type == "critic":
-        # handle asymmetric actor-critic formulation
-        group_name = "critic" if "critic" in env.observation_manager.active_terms else "policy"
-    else:
-        group_name = "policy"
-
-    # note: this is hard-coded for grid-pattern of ordering "xy" and size (1.6, 1.0)
-    if "height_scan" in env.observation_manager.active_terms[group_name]:
-        obs[:, 48:235] = obs[:, 48:235].view(-1, 11, 17).flip(dims=[2]).view(-1, 11 * 17)
-
-    return obs
-
-
-
-def _transform_actions_front_back(actions: torch.Tensor) -> torch.Tensor:
-    """Applies a front-back symmetry transformation to the actions tensor.
-
-    This function modifies the given actions tensor by applying transformations
-    that represent a symmetry with respect to the front-back axis. This includes
-    flipping the joint positions, joint velocities, and last actions for the
-    ANYmal robot.
-
-    Args:
-        actions: The actions tensor to be transformed.
-
-    Returns:
-        The transformed actions tensor with front-back symmetry applied.
-    """
-    actions = actions.clone()
-    actions[:] = _switch_anymal_joints_front_back(actions[:])
-    return actions
-
-
-def _switch_anymal_joints_front_back(joint_data: torch.Tensor) -> torch.Tensor:
-    """Applies a front-back symmetry transformation to the joint data tensor."""
-    joint_data_switched = torch.zeros_like(joint_data)
-    joint_data_switched[..., :] *= -1.0
-
-    return joint_data_switched

@@ -132,6 +132,10 @@ class SoccerKickCommand(CommandTerm):
         # Kick-detection latches --------------------------------------------
         self._kick_contact_awarded = torch.zeros(N, dtype=torch.bool, device=d)
         self._kick_contact_new = torch.zeros(N, dtype=torch.bool, device=d)
+        # Near-foot bookkeeping: which foot is on the ball's spawn side (latched
+        # at resample) and which foot is currently closest to the ball.
+        self._near_foot_is_left = torch.zeros(N, dtype=torch.bool, device=d)
+        self._contact_foot_is_left = torch.zeros(N, dtype=torch.bool, device=d)
         self._kick_success_awarded = torch.zeros(N, dtype=torch.bool, device=d)
         # Episode-lifetime latches for metrics. Multi-attempt shoot clears the
         # reward latches above, but contact/success rates should still mean
@@ -352,6 +356,16 @@ class SoccerKickCommand(CommandTerm):
         return self._kick_contact_new
 
     @property
+    def near_foot_is_left(self) -> torch.Tensor:
+        """True for envs whose ball spawned on the robot's left side."""
+        return self._near_foot_is_left
+
+    @property
+    def contact_foot_is_left(self) -> torch.Tensor:
+        """True when the left foot is currently the closest to the ball."""
+        return self._contact_foot_is_left
+
+    @property
     def kick_success_awarded(self) -> torch.Tensor:
         return self._kick_success_awarded
 
@@ -556,6 +570,9 @@ class SoccerKickCommand(CommandTerm):
         ball_angle = _uniform(*self.cfg.ball_spawn_angle_range, n=n, device=d)
         local_x = ball_dist * torch.cos(ball_angle)
         local_y = ball_dist * torch.sin(ball_angle)
+        # Near foot = the side the ball spawned on (body-frame +y is left, so a
+        # positive spawn angle puts the ball on the robot's left).
+        self._near_foot_is_left[env_ids_t] = ball_angle > 0.0
         cos_y = torch.cos(spawn_yaw)
         sin_y = torch.sin(spawn_yaw)
         offset_x_w = cos_y * local_x - sin_y * local_y
@@ -993,6 +1010,9 @@ class SoccerKickCommand(CommandTerm):
         ball_p = self._ball_pos_w.unsqueeze(1)
         foot_ball_d = torch.linalg.norm(foot_pos_w - ball_p, dim=-1)
         min_foot_ball_d = foot_ball_d.amin(dim=-1)
+        # Foot index order is (left, right); track which foot is closest so the
+        # near-foot reward can compare it against the latched spawn side.
+        self._contact_foot_is_left = foot_ball_d[:, 0] < foot_ball_d[:, 1]
         ball_xy_speed = torch.linalg.norm(self._ball_vel_w[:, :2], dim=-1)
         contact_now = (min_foot_ball_d < self.cfg.kick_foot_proximity) & (
             ball_xy_speed > self.cfg.kick_ball_speed_thresh

@@ -431,6 +431,13 @@ class RewardsCfg:
         weight=10.0,
         params={"command_name": "soccer_kick"},
     )
+    # Experimental: reward kicking with the foot on the ball's spawn side.
+    # Disabled by default (weight 0); enabled via train.py --near-foot-kick.
+    near_foot_kick = RewTerm(
+        func=mdp.soccer_rewards.near_foot_kick,
+        weight=0.0,
+        params={"command_name": "soccer_kick"},
+    )
     kick_angle_error = RewTerm(
         func=mdp.soccer_rewards.kick_angle_error,
         weight=-10.0,

@@ -32,6 +32,25 @@ parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
 parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
+# experimental left-right symmetry + near-foot kicking (soccer kick task)
+parser.add_argument(
+    "--symmetry",
+    action="store_true",
+    default=False,
+    help="Enable left-right symmetry data augmentation (soccer kick task).",
+)
+parser.add_argument(
+    "--near_foot_kick",
+    action="store_true",
+    default=False,
+    help="Reward kicking with the foot on the ball's spawn side (soccer kick task).",
+)
+parser.add_argument(
+    "--near_foot_kick_weight",
+    type=float,
+    default=2.0,
+    help="Reward weight for --near_foot_kick.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -102,7 +121,12 @@ from isaaclab.envs import (
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_yaml
 
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlSymmetryCfg, RslRlVecEnvWrapper
+
+# Import path (module:attr) of the soccer-kick left-right symmetry function.
+_SYMMETRY_FUNC = (
+    "booster_rl_tasks.tasks.manager_based.beyond_mimic.mdp.symmetry:compute_symmetric_states"
+)
 
 
 def _split_obs(obs_td):
@@ -262,6 +286,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+
+    # experimental toggles (soccer kick task) -------------------------------
+    if args_cli.symmetry:
+        agent_cfg.algorithm.symmetry_cfg = RslRlSymmetryCfg(
+            use_data_augmentation=True,
+            data_augmentation_func=_SYMMETRY_FUNC,
+        )
+        print("[INFO] Left-right symmetry data augmentation ENABLED.")
+    if args_cli.near_foot_kick:
+        rewards_cfg = getattr(env_cfg, "rewards", None)
+        if rewards_cfg is not None and hasattr(rewards_cfg, "near_foot_kick"):
+            rewards_cfg.near_foot_kick.weight = args_cli.near_foot_kick_weight
+            print(
+                f"[INFO] Near-foot kick reward ENABLED (weight={args_cli.near_foot_kick_weight})."
+            )
+        else:
+            print("[WARN] --near_foot_kick set but env_cfg has no 'near_foot_kick' reward term; ignoring.")
 
     # multi-gpu training configuration
     if args_cli.distributed:

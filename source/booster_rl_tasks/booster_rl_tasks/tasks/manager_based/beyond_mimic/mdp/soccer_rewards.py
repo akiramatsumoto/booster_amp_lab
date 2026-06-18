@@ -587,6 +587,21 @@ def kick_success(
     return flag.float()
 
 
+def near_foot_kick(
+    env: "ManagerBasedRLEnv", command_name: str = "soccer_kick"
+) -> torch.Tensor:
+    """Encourage kicking with the foot on the ball's spawn side.
+
+    Fires once at the kick-contact event: +1 when the contacting (closest) foot
+    matches the latched near side, -1 when the far foot is used, 0 otherwise.
+    The near side is the side the ball spawned on relative to the robot.
+    """
+    cmd = _cmd(env, command_name)
+    fresh = cmd.kick_contact_new.float()
+    match = cmd.contact_foot_is_left == cmd.near_foot_is_left
+    return fresh * (match.float() * 2.0 - 1.0)
+
+
 def goal_scored_reward(
     env: "ManagerBasedRLEnv", command_name: str = "soccer_kick"
 ) -> torch.Tensor:
