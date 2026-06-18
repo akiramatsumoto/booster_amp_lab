@@ -13,6 +13,7 @@ Layout:
 """
 from __future__ import annotations
 
+import math
 from dataclasses import MISSING
 
 import isaaclab.sim as sim_utils
@@ -115,6 +116,10 @@ class CommandsCfg:
         # 0.20 m proximity gate never fires even on a clean kick. Widen it so
         # ``kick_contact`` / ``stop_mode`` latch on real contacts.
         kick_foot_proximity=0.30,
+        # Fixed ball spawn: 1 m in front, within a ±100° cone. Distance is no
+        # longer driven by the curriculum (see CurriculumCfg).
+        ball_spawn_distance_range=(1.0, 1.0),
+        ball_spawn_angle_range=(-math.radians(100.0), math.radians(100.0)),
     )
 
 
@@ -426,24 +431,14 @@ class RewardsCfg:
         weight=10.0,
         params={"command_name": "soccer_kick"},
     )
-    goal_scored = RewTerm(
-        func=mdp.soccer_rewards.goal_scored_reward,
-        weight=30.0,
-        params={"command_name": "soccer_kick"},
-    )
-    pass_landing = RewTerm(
-        func=mdp.soccer_rewards.pass_landing_reward,
-        weight=30.0,
-        params={"command_name": "soccer_kick"},
-    )
     kick_angle_error = RewTerm(
         func=mdp.soccer_rewards.kick_angle_error,
-        weight=-1.0,
+        weight=-10.0,
         params={"command_name": "soccer_kick"},
     )
     kick_strength_error = RewTerm(
         func=mdp.soccer_rewards.kick_strength_error,
-        weight=-0.5,
+        weight=-5.0,
         params={"command_name": "soccer_kick"},
     )
     # ---- Auxiliary / posture ----
@@ -505,7 +500,7 @@ class RewardsCfg:
         params={"command_name": "soccer_kick"},
     )
     alive = RewTerm(func=mdp.soccer_rewards.alive_reward, weight=0.5)
-    terminated = RewTerm(func=mdp.soccer_rewards.terminated_penalty, weight=-20.0)
+    terminated = RewTerm(func=mdp.soccer_rewards.terminated_penalty, weight=-200.0)
 
     # ---- V3.3 search-for-ball shaping ----
     # When the head camera does not see the ball, reward the policy for
@@ -567,25 +562,12 @@ class TerminationsCfg:
         func=mdp.soccer_terminations.ball_out_of_field,
         params={"command_name": "soccer_kick"},
     )
-    goal_scored_done = DoneTerm(
-        func=mdp.soccer_terminations.goal_scored,
-        params={"command_name": "soccer_kick"},
-    )
 
 
 @configclass
 class CurriculumCfg:
-    ball_distance = CurrTerm(
-        func=mdp.soccer_curriculums.ball_distance_curriculum,
-        params={
-            "command_name": "soccer_kick",
-            "lo_start": 0.4,
-            "hi_start": 1.2,
-            "lo_final": 1.0,
-            "hi_final": 3.5,
-            "num_steps_to_final": 4000 * 4096,
-        },
-    )
+    # Ball distance is fixed at 1 m (see CommandsCfg.soccer_kick); the distance
+    # curriculum is intentionally disabled.
     fall_rate_rand = CurrTerm(
         func=mdp.soccer_curriculums.FallRateDomainRandCurriculum,
         params={
