@@ -65,11 +65,13 @@ class VirtualPerceptionCfg:
     """
 
     # ------------------------------------------------------------------ FOV
-    fov_h_deg: float = 105.12
-    """Horizontal FOV (degrees, full angle). Default: K1 RealSense D435i."""
+    # D-Robotics RDK Stereo Camera Module (SC230AI, 2.28 mm lens):
+    # 178° diagonal / 150° horizontal / 80° vertical.
+    fov_h_deg: float = 150.0
+    """Horizontal FOV (degrees, full angle). Default: D-Robotics RDK Stereo Camera."""
 
-    fov_v_deg: float = 94.17
-    """Vertical FOV (degrees, full angle). Default: K1 RealSense D435i."""
+    fov_v_deg: float = 80.0
+    """Vertical FOV (degrees, full angle). Default: D-Robotics RDK Stereo Camera."""
 
     # --------------------------------------------------------------- detection
     max_detection_range: float = 7.0
