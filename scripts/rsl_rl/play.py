@@ -437,13 +437,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             )
             contact = bool(soccer_cmd_term.kick_contact_awarded[0].item())
             ssk = int(soccer_cmd_term.steps_since_kick[0].item())
+            # commanded kick direction (world-frame unit vector) vs the ball's
+            # actual velocity vector, for env 0.
+            cmd_dir = soccer_cmd_term.target_dir_w[0, :2]
+            ball_vel = soccer_cmd_term.ball_vel_w[0, :2]
+            cmd_deg = float(torch.rad2deg(torch.atan2(cmd_dir[1], cmd_dir[0])).item())
+            vel_deg = float(torch.rad2deg(torch.atan2(ball_vel[1], ball_vel[0])).item())
+            # signed angle error (ball_vel relative to cmd_dir), wrapped to (-180, 180].
+            diff_deg = (vel_deg - cmd_deg + 180.0) % 360.0 - 180.0
             # only log when the ball speed changes (rounded to 2 decimals)
             ball_spd_r = round(ball_speed, 2)
             if prev_ball_spd is None or ball_spd_r != prev_ball_spd:
                 print(
                     f"[INFO] stop={n_stop}/{stop_mode.numel()} on={on_envs} | "
                     f"ball_spd={ball_speed:.2f} min_foot_ball={min_fb:.2f} "
-                    f"contact={contact} ssk={ssk}"
+                    f"contact={contact} ssk={ssk} | "
+                    f"cmd_dir=({cmd_dir[0]:.2f},{cmd_dir[1]:.2f}) {cmd_deg:+.1f}deg "
+                    f"ball_vel=({ball_vel[0]:.2f},{ball_vel[1]:.2f}) {vel_deg:+.1f}deg "
+                    f"diff={diff_deg:+.1f}deg"
                 )
                 prev_ball_spd = ball_spd_r
 
