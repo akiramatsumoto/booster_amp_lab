@@ -610,6 +610,29 @@ class CurriculumCfg:
             "max_abs_weight": None,
         },
     )
+    # Ramp the heavy stability/quality terms with the kick-contact return, the
+    # same way ``kick_error_weight`` ramps the direction/strength penalties.
+    # ``terminated`` (-200), ``pelvis_orientation`` (-5) and ``goal_scored``
+    # (250) are far too strong for the *early* policy: the fall/tilt penalty in
+    # particular makes the balance-risky kick swing net-negative in expectation,
+    # so the policy freezes into a safe approach-and-search local optimum and
+    # never attempts a kick. With ``scale_cap=1.0`` each weight ramps from 0 up
+    # to its configured base value (the full strength above) and stops there —
+    # so the policy can freely explore the kick motion while contact is rare,
+    # and the stability/goal terms only tighten once contact is established.
+    # gain=100 reaches full strength at ema(kick_contact)≈0.01 (≈ where
+    # ``kick_error_weight`` already considers contact meaningful).
+    contact_gated_weight = CurrTerm(
+        func=mdp.soccer_curriculums.KickErrorWeightCurriculum,
+        params={
+            "gain": 100.0,
+            "ema_alpha": 0.1,
+            "contact_term": "kick_contact",
+            "scaled_terms": ["terminated", "pelvis_orientation", "goal_scored"],
+            "scale_cap": 1.0,
+            "max_abs_weight": None,
+        },
+    )
 
 
 # =========================================================================

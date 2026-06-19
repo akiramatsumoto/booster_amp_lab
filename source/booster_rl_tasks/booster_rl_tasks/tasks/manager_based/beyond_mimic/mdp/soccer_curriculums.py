@@ -270,6 +270,13 @@ class KickErrorWeightCurriculum(ManagerTermBase):
 
     Note: the scaling is unbounded by default — set ``max_abs_weight`` to clamp
     the magnitude so a high contact return cannot blow up the penalties.
+
+    Alternatively, set ``scale_cap`` to clamp the ``ema * gain`` multiplier
+    itself. With ``scale_cap=1.0`` each weight ramps from 0 up to *exactly* its
+    configured base value and stops there (never overshoots), which is the
+    right behaviour for large-magnitude terms that should reach — but not
+    exceed — a target strength as contact becomes reliable (e.g. ``terminated``,
+    ``pelvis_orientation``, ``goal_scored``).
     """
 
     def __init__(self, cfg: "CurriculumTermCfg", env: "ManagerBasedRLEnv"):
@@ -282,6 +289,7 @@ class KickErrorWeightCurriculum(ManagerTermBase):
             p.get("scaled_terms", ["kick_angle_error", "kick_strength_error"])
         )
         self.max_abs_weight = p.get("max_abs_weight", None)
+        self.scale_cap = p.get("scale_cap", None)
         self._ema: float = 0.0
         self._base: dict[str, float] | None = None  # captured on first call
 
@@ -294,6 +302,7 @@ class KickErrorWeightCurriculum(ManagerTermBase):
         contact_term: str = "kick_contact",
         scaled_terms: Sequence[str] = ("kick_angle_error", "kick_strength_error"),
         max_abs_weight: float | None = None,
+        scale_cap: float | None = None,
     ) -> float:
         rm = env.reward_manager
         # Capture each scaled term's configured (base) weight once, before we
@@ -311,6 +320,8 @@ class KickErrorWeightCurriculum(ManagerTermBase):
 
         # Apply the scaled weights live.
         scale = self._ema * self.gain
+        if self.scale_cap is not None:
+            scale = min(scale, abs(float(self.scale_cap)))
         for n in self.scaled_terms:
             w = self._base[n] * scale
             if self.max_abs_weight is not None:
