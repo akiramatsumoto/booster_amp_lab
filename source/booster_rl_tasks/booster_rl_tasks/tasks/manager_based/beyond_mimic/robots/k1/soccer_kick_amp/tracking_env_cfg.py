@@ -431,6 +431,11 @@ class RewardsCfg:
         weight=10.0,
         params={"command_name": "soccer_kick"},
     )
+    goal_scored = RewTerm(
+        func=mdp.soccer_rewards.goal_scored_reward,
+        weight=250.0,
+        params={"command_name": "soccer_kick"},
+    )
     # Experimental: reward kicking with the foot on the ball's spawn side.
     # Disabled by default (weight 0); enabled via train.py --near-foot-kick.
     near_foot_kick = RewTerm(
@@ -567,6 +572,10 @@ class TerminationsCfg:
     )
     ball_out = DoneTerm(
         func=mdp.soccer_terminations.ball_out_of_field,
+        params={"command_name": "soccer_kick"},
+    )
+    goal_scored_done = DoneTerm(
+        func=mdp.soccer_terminations.goal_scored,
         params={"command_name": "soccer_kick"},
     )
 
