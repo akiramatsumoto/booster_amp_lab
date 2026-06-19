@@ -120,6 +120,10 @@ class CommandsCfg:
         # longer driven by the curriculum (see CurriculumCfg).
         ball_spawn_distance_range=(1.0, 1.0),
         ball_spawn_angle_range=(-math.radians(100.0), math.radians(100.0)),
+        # Kick strength 1-8 m/s, oversampling the weak end (exponent 2 → mean
+        # ~3.3 m/s instead of the uniform 4.5).
+        target_strength_range=(1.0, 8.0),
+        target_strength_sample_exponent=2.0,
     )
 
 
@@ -445,12 +449,12 @@ class RewardsCfg:
     )
     kick_angle_error = RewTerm(
         func=mdp.soccer_rewards.kick_angle_error,
-        weight=-10.0,
+        weight=-1.0,
         params={"command_name": "soccer_kick"},
     )
     kick_strength_error = RewTerm(
         func=mdp.soccer_rewards.kick_strength_error,
-        weight=-5.0,
+        weight=-0.5,
         params={"command_name": "soccer_kick"},
     )
     # ---- Auxiliary / posture ----
@@ -591,6 +595,19 @@ class CurriculumCfg:
             "consecutive_required": 5,
             "ema_alpha": 0.1,
             "check_interval_steps": 4096 * 24,
+        },
+    )
+    # Ramp the kick angle/strength error penalties with the kick-contact return:
+    # weight = base_weight * ema(Episode_Reward/kick_contact) * gain. Penalties
+    # start near 0 and tighten only once the policy reliably makes contact.
+    kick_error_weight = CurrTerm(
+        func=mdp.soccer_curriculums.KickErrorWeightCurriculum,
+        params={
+            "gain": 1000.0,
+            "ema_alpha": 0.1,
+            "contact_term": "kick_contact",
+            "scaled_terms": ["kick_angle_error", "kick_strength_error"],
+            "max_abs_weight": None,
         },
     )
 

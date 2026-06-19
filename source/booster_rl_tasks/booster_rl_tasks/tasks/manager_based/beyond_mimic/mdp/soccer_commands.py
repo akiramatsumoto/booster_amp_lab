@@ -601,8 +601,14 @@ class SoccerKickCommand(CommandTerm):
             shoot_lo, shoot_hi = self.cfg.shoot_target_strength_range
         else:
             shoot_lo, shoot_hi = pass_lo, pass_hi
-        shoot_strength = _uniform(shoot_lo, shoot_hi, n=n, device=d)
-        pass_strength = _uniform(pass_lo, pass_hi, n=n, device=d)
+        # Bias the strength sampling toward the low (weak) end by raising a
+        # uniform sample to ``target_strength_sample_exponent``. Exponent 1.0
+        # recovers a plain uniform draw; >1 puts more mass near ``lo``.
+        exp = float(self.cfg.target_strength_sample_exponent)
+        shoot_u = torch.rand(n, device=d) ** exp
+        pass_u = torch.rand(n, device=d) ** exp
+        shoot_strength = shoot_lo + (shoot_hi - shoot_lo) * shoot_u
+        pass_strength = pass_lo + (pass_hi - pass_lo) * pass_u
         target_strength = torch.where(is_shoot_new, shoot_strength, pass_strength)
         self._target_strength[env_ids_t] = target_strength
         # Normalize within the active mode's configured range. The observation
@@ -1367,6 +1373,10 @@ class SoccerKickCommandCfg(CommandTermCfg):
     # 5.88 m/s²; a 14 m/s peak travels ~16.7 m before stopping, easily
     # reaching the far end of the field.
     shoot_target_strength_range: tuple[float, float] | None = None
+    # Bias for the strength sampling. A uniform sample u~U(0,1) is raised to
+    # this exponent before mapping into the range, so values >1 oversample the
+    # weak (low) end. 1.0 = plain uniform (default, backward compatible).
+    target_strength_sample_exponent: float = 1.0
 
     # Goal definition (used for shoot-mode scoring).
     goal_line_x: float = GOAL_LINE_X

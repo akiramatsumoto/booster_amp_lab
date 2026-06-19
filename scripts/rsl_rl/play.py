@@ -375,6 +375,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     except Exception:
         soccer_cmd_term = None
     prev_ball_spd = None
+    # cmd_dir drifts after the kick (target_dir_w is re-derived from the live
+    # ball position each step), so latch the pre-kick value for env 0 and show
+    # that frozen direction once the ball has been kicked.
+    prev_cmd = None          # (cmd_dir tensor, cmd_deg) from the previous step
+    prev_ssk = None
+    latched_cmd = None       # (cmd_dir tensor, cmd_deg) frozen at the kick
 
     # simulate environment
     while simulation_app.is_running():
@@ -439,12 +445,32 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             ssk = int(soccer_cmd_term.steps_since_kick[0].item())
             # commanded kick direction (world-frame unit vector) vs the ball's
             # actual velocity vector, for env 0.
-            cmd_dir = soccer_cmd_term.target_dir_w[0, :2]
+            cmd_dir = soccer_cmd_term.target_dir_w[0, :2].clone()
             ball_vel = soccer_cmd_term.ball_vel_w[0, :2]
             cmd_deg = float(torch.rad2deg(torch.atan2(cmd_dir[1], cmd_dir[0])).item())
             vel_deg = float(torch.rad2deg(torch.atan2(ball_vel[1], ball_vel[0])).item())
-            # signed angle error (ball_vel relative to cmd_dir), wrapped to (-180, 180].
-            diff_deg = (vel_deg - cmd_deg + 180.0) % 360.0 - 180.0
+
+            # Latch the command direction at the kick. A kick is detected when
+            # ssk rises from <0 (not kicked) to >=0; freeze the previous step's
+            # value (the direction just before the ball was struck). Clear the
+            # latch on a fresh/pre-kick episode (ssk < 0).
+            if ssk < 0:
+                latched_cmd = None
+            elif prev_ssk is not None and prev_ssk < 0 and ssk >= 0:
+                latched_cmd = prev_cmd if prev_cmd is not None else (cmd_dir, cmd_deg)
+            prev_cmd = (cmd_dir, cmd_deg)
+            prev_ssk = ssk
+
+            # Use the frozen direction once kicked, else the live one.
+            if latched_cmd is not None:
+                disp_dir, disp_deg = latched_cmd
+                cmd_tag = "cmd_dir*"  # '*' marks the latched (pre-kick) value
+            else:
+                disp_dir, disp_deg = cmd_dir, cmd_deg
+                cmd_tag = "cmd_dir"
+            # signed angle error (ball_vel relative to the displayed cmd_dir),
+            # wrapped to (-180, 180].
+            diff_deg = (vel_deg - disp_deg + 180.0) % 360.0 - 180.0
             # only log when the ball speed changes (rounded to 2 decimals)
             ball_spd_r = round(ball_speed, 2)
             if prev_ball_spd is None or ball_spd_r != prev_ball_spd:
@@ -452,7 +478,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     f"[INFO] stop={n_stop}/{stop_mode.numel()} on={on_envs} | "
                     f"ball_spd={ball_speed:.2f} min_foot_ball={min_fb:.2f} "
                     f"contact={contact} ssk={ssk} | "
-                    f"cmd_dir=({cmd_dir[0]:.2f},{cmd_dir[1]:.2f}) {cmd_deg:+.1f}deg "
+                    f"{cmd_tag}=({disp_dir[0]:.2f},{disp_dir[1]:.2f}) {disp_deg:+.1f}deg "
                     f"ball_vel=({ball_vel[0]:.2f},{ball_vel[1]:.2f}) {vel_deg:+.1f}deg "
                     f"diff={diff_deg:+.1f}deg"
                 )

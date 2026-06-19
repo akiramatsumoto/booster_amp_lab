@@ -250,3 +250,71 @@ def shoot_strength_curriculum(
     term = env.command_manager.get_term(command_name)
     term.cfg.shoot_target_strength_range = (lo, hi)
     return (lo, hi)
+
+
+class KickErrorWeightCurriculum(ManagerTermBase):
+    """Ramp the kick angle/strength error penalties with the kick-contact return.
+
+    The direction/strength penalties should only matter once the policy can
+    actually touch the ball. This scales each penalty by an EMA of
+    ``Episode_Reward/kick_contact`` (the same quantity logged by the reward
+    manager), so the weights grow from ~0 toward full strictness as contact
+    becomes reliable::
+
+        weight = base_weight * ema(kick_contact_return) * gain
+
+    ``base_weight`` is each term's configured weight, captured on the first
+    call. With ``gain=1000`` and ``kick_contact_return≈0.0089`` the angle
+    weight becomes ``-1.0 * 0.0089 * 1000 = -8.9`` and the strength weight
+    ``-0.5 * 0.0089 * 1000 = -4.45``.
+
+    Note: the scaling is unbounded by default — set ``max_abs_weight`` to clamp
+    the magnitude so a high contact return cannot blow up the penalties.
+    """
+
+    def __init__(self, cfg: "CurriculumTermCfg", env: "ManagerBasedRLEnv"):
+        super().__init__(cfg, env)
+        p = cfg.params
+        self.gain = float(p.get("gain", 1000.0))
+        self.alpha = float(p.get("ema_alpha", 0.1))
+        self.contact_term = p.get("contact_term", "kick_contact")
+        self.scaled_terms = list(
+            p.get("scaled_terms", ["kick_angle_error", "kick_strength_error"])
+        )
+        self.max_abs_weight = p.get("max_abs_weight", None)
+        self._ema: float = 0.0
+        self._base: dict[str, float] | None = None  # captured on first call
+
+    def __call__(
+        self,
+        env: "ManagerBasedRLEnv",
+        env_ids: Sequence[int],
+        gain: float = 1000.0,
+        ema_alpha: float = 0.1,
+        contact_term: str = "kick_contact",
+        scaled_terms: Sequence[str] = ("kick_angle_error", "kick_strength_error"),
+        max_abs_weight: float | None = None,
+    ) -> float:
+        rm = env.reward_manager
+        # Capture each scaled term's configured (base) weight once, before we
+        # start overwriting it.
+        if self._base is None:
+            self._base = {n: float(rm.get_term_cfg(n).weight) for n in self.scaled_terms}
+
+        # Replicate Episode_Reward/<contact_term> for the just-finished envs.
+        # Curriculum runs before reward_manager.reset, so the per-env episode
+        # sums still hold this episode's accumulated (weighted) contact reward.
+        sums = rm._episode_sums.get(self.contact_term)
+        if sums is not None and len(env_ids) > 0:
+            kc_batch = float(sums[env_ids].mean().item()) / float(env.max_episode_length_s)
+            self._ema = self.alpha * kc_batch + (1.0 - self.alpha) * self._ema
+
+        # Apply the scaled weights live.
+        scale = self._ema * self.gain
+        for n in self.scaled_terms:
+            w = self._base[n] * scale
+            if self.max_abs_weight is not None:
+                cap = abs(float(self.max_abs_weight))
+                w = max(-cap, min(cap, w))
+            rm.get_term_cfg(n).weight = w
+        return self._ema
