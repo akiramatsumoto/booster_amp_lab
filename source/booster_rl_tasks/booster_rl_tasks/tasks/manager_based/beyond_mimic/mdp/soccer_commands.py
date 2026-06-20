@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import CommandTerm, CommandTermCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import quat_apply_inverse, quat_from_euler_xyz, yaw_quat
+from isaaclab.utils.math import quat_apply, quat_apply_inverse, quat_from_euler_xyz, yaw_quat
 
 try:
     import isaaclab.sim as sim_utils
@@ -54,6 +54,25 @@ from booster_rl_tasks.tasks.manager_based.beyond_mimic.mdp.soccer_perception imp
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+
+
+# Upper-body (head + arms) joint angles (rad) from the deploy DEFAULT_ANGLES
+# standing pose. The walk dataset only carries the 12 leg joints (the gait
+# robot's arms/head are fixed), so when a walk state is injected as a kick init
+# state these upper-body DOFs are held here (velocity 0). Values are the
+# upper-body slice of the firmware DEFAULT_ANGLES array, keyed by K1 joint name.
+_DEPLOY_DEFAULT_UPPER_BODY: dict[str, float] = {
+    "AAHead_yaw": 0.0,
+    "Head_pitch": 0.0,
+    "ALeft_Shoulder_Pitch": 0.3,
+    "Left_Shoulder_Roll": -1.374,
+    "Left_Elbow_Pitch": 0.0,
+    "Left_Elbow_Yaw": -1.2,
+    "ARight_Shoulder_Pitch": 0.3,
+    "Right_Shoulder_Roll": 1.374,
+    "Right_Elbow_Pitch": 0.0,
+    "Right_Elbow_Yaw": 1.2,
+}
 
 
 class SoccerKickCommand(CommandTerm):
@@ -266,6 +285,133 @@ class SoccerKickCommand(CommandTerm):
         self._ball_history_buf = torch.zeros(
             self._ball_history_len, N, self._ball_history_dim, device=d
         )
+
+        # --- Walk-state initialization (walk→kick transition) --------------
+        # Optional dataset of mid-walk robot states. When loaded, a fraction
+        # of envs are reset into a sampled walk state (joint pos/vel + base
+        # height/tilt + base velocity) instead of the default standing pose,
+        # so the kick policy learns to strike out of a walking gait. See
+        # ``_load_init_states`` / ``_resample_command``.
+        self._init_states_loaded: bool = False
+        if cfg.init_state_dataset_path is not None:
+            self._load_init_states(cfg.init_state_dataset_path)
+
+    # --- Walk-state initialization helpers ---------------------------------
+    def _load_init_states(self, path: str) -> None:
+        """Load a mid-walk state dataset and reorder joints to this robot.
+
+        The dataset is produced by the locomotion ``play.py --dump_states``
+        and stores, for each captured frame, the joint pos/vel, base height
+        (above the env origin), base roll/pitch (yaw is dropped so the sample
+        is reusable at any spawn heading), and the base linear/angular
+        velocity expressed in the body frame.
+        """
+        import os
+
+        d = self.device
+        abspath = os.path.expanduser(path)
+        data = torch.load(abspath, map_location=d, weights_only=False)
+
+        # Map dataset joint columns into this robot's joint order. Matched
+        # joints (the 12 legs) take the live walk values; joints absent from
+        # the dataset (the arms/head, which the gait robot keeps fixed) are
+        # held at the deploy DEFAULT_ANGLES upper-body pose with zero velocity.
+        ds_names = list(data["joint_names"])
+        robot_names = list(self._robot.data.joint_names)
+        M = int(data["joint_pos"].shape[0])
+        J = len(robot_names)
+
+        ds_jp = data["joint_pos"].to(d)
+        ds_jv = data["joint_vel"].to(d)
+
+        # Base = deploy default upper-body pose (by name), vel 0. Joints neither
+        # in the dataset nor the upper-body table fall back to 0.0.
+        base_jp = torch.tensor(
+            [_DEPLOY_DEFAULT_UPPER_BODY.get(n, 0.0) for n in robot_names], device=d
+        )
+        init_jp = base_jp.unsqueeze(0).expand(M, J).clone()
+        init_jv = torch.zeros(M, J, device=d)
+        matched = []
+        for j, name in enumerate(robot_names):
+            if name in ds_names:
+                c = ds_names.index(name)
+                init_jp[:, j] = ds_jp[:, c]
+                init_jv[:, j] = ds_jv[:, c]
+                matched.append(name)
+        unmatched = [n for n in robot_names if n not in ds_names]
+        if unmatched:
+            print(
+                f"[SoccerKickCommand] init-state dataset {abspath!r} has no data for "
+                f"{len(unmatched)} robot joints {unmatched}; held at deploy default "
+                f"upper-body pose (vel 0)."
+            )
+
+        self._init_joint_pos = init_jp.contiguous()
+        self._init_joint_vel = init_jv.contiguous()
+        self._init_base_height = data["base_height"].to(d).contiguous()
+        self._init_roll = data["base_roll"].to(d).contiguous()
+        self._init_pitch = data["base_pitch"].to(d).contiguous()
+        self._init_lin_vel_b = data["base_lin_vel_b"].to(d).contiguous()
+        self._init_ang_vel_b = data["base_ang_vel_b"].to(d).contiguous()
+        self._init_count = M
+        self._init_states_loaded = self._init_count > 0
+        print(
+            f"[SoccerKickCommand] Loaded {self._init_count} walk init-states from "
+            f"{abspath!r} ({len(matched)}/{J} joints matched, "
+            f"init_state_prob={self.cfg.init_state_prob}, "
+            f"seed_action={self.cfg.init_state_seed_action})."
+        )
+
+    def _seed_action_to_pose(
+        self, env_ids_t: torch.Tensor, joint_pos: torch.Tensor, mask: torch.Tensor
+    ) -> None:
+        """Pre-seed the action buffer so the PD setpoint matches ``joint_pos``.
+
+        With ``JointPositionAction`` the applied target is
+        ``raw * scale + offset``; we invert that so step-1's ``last_action``
+        observation and ``action_rate`` penalty are measured relative to the
+        injected pose instead of zero. Only envs flagged in ``mask`` (walk-init
+        envs) are seeded; standing-init envs keep the zeroed action buffer.
+
+        Runs inside ``_resample_command``, i.e. *after* ``action_manager.reset``
+        has zeroed the buffers (see ``ManagerBasedRLEnv._reset_idx`` order), so
+        the seed survives into the next step.
+        """
+        if not bool(mask.any()):
+            return
+        am = self._env.action_manager
+        term_name = self.cfg.init_state_action_term
+        try:
+            term = am.get_term(term_name)
+        except Exception:
+            return  # action term not present — skip seeding gracefully.
+
+        # Target pose for the joints this term controls, in term order.
+        joint_ids = term._joint_ids
+        pose_term = joint_pos[:, joint_ids]  # (n_reset, action_dim)
+        # ``_scale`` / ``_offset`` may be (num_envs_total, action_dim) tensors;
+        # index them to the reset envs so they align row-wise with pose_term
+        # (otherwise the per-reset rows broadcast against the full env batch).
+        scale = term._scale
+        offset = term._offset
+        if isinstance(scale, torch.Tensor) and scale.dim() == 2:
+            scale = scale[env_ids_t]
+        if isinstance(offset, torch.Tensor) and offset.dim() == 2:
+            offset = offset[env_ids_t]
+        raw = (pose_term - offset) / scale  # invert raw*scale+offset = pose
+
+        # Locate this term's slice within the concatenated action vector.
+        names = list(am.active_terms)
+        dims = list(am.action_term_dim)
+        i = names.index(term_name)
+        start = int(sum(dims[:i]))
+        sl = slice(start, start + dims[i])
+
+        sel = env_ids_t[mask]
+        raw_sel = raw[mask]
+        am._action[sel, sl] = raw_sel
+        am._prev_action[sel, sl] = raw_sel
+        term._raw_actions[sel] = raw_sel
 
     # --- Public properties -------------------------------------------------
     @property
@@ -547,23 +693,56 @@ class SoccerKickCommand(CommandTerm):
 
         env_origins = self._env.scene.env_origins[env_ids_t]
 
+        # ----- Initial body state: standing default vs sampled walk state --
+        # Defaults reproduce the original standing reset. When a walk-state
+        # dataset is loaded, a per-env Bernoulli draw replaces them with a
+        # sampled mid-walk pose/velocity so the kick is trained out of a gait.
+        base_z = torch.full((n,), float(self.cfg.robot_spawn_z), device=d)
+        base_roll = torch.zeros(n, device=d)
+        base_pitch = torch.zeros(n, device=d)
+        joint_pos = self._robot.data.default_joint_pos[env_ids_t].clone()
+        joint_vel = self._robot.data.default_joint_vel[env_ids_t].clone()
+        lin_vel_b = torch.zeros(n, 3, device=d)
+        ang_vel_b = torch.zeros(n, 3, device=d)
+
+        use_walk = torch.zeros(n, dtype=torch.bool, device=d)
+        if self._init_states_loaded:
+            use_walk = torch.rand(n, device=d) < float(self.cfg.init_state_prob)
+            if bool(use_walk.any()):
+                idx = torch.randint(0, self._init_count, (n,), device=d)
+                m = use_walk
+                m1 = m.unsqueeze(1)
+                base_z = torch.where(m, self._init_base_height[idx], base_z)
+                base_roll = torch.where(m, self._init_roll[idx], base_roll)
+                base_pitch = torch.where(m, self._init_pitch[idx], base_pitch)
+                joint_pos = torch.where(m1, self._init_joint_pos[idx], joint_pos)
+                joint_vel = torch.where(m1, self._init_joint_vel[idx], joint_vel)
+                lin_vel_b = torch.where(m1, self._init_lin_vel_b[idx], lin_vel_b)
+                ang_vel_b = torch.where(m1, self._init_ang_vel_b[idx], ang_vel_b)
+
         robot_pose = torch.zeros(n, 7, device=d)
         robot_pose[:, 0] = env_origins[:, 0] + spawn_x
         robot_pose[:, 1] = env_origins[:, 1] + spawn_y
-        robot_pose[:, 2] = env_origins[:, 2] + self.cfg.robot_spawn_z
-        robot_pose[:, 3:7] = quat_from_euler_xyz(
-            torch.zeros_like(spawn_yaw),
-            torch.zeros_like(spawn_yaw),
-            spawn_yaw,
-        )
+        robot_pose[:, 2] = env_origins[:, 2] + base_z
+        # Reconstruct orientation from the sampled roll/pitch but the freshly
+        # sampled spawn yaw, so the walk sample is reusable at any heading.
+        robot_pose[:, 3:7] = quat_from_euler_xyz(base_roll, base_pitch, spawn_yaw)
         self._robot.write_root_pose_to_sim(robot_pose, env_ids=env_ids_t)
-        self._robot.write_root_velocity_to_sim(
-            torch.zeros(n, 6, device=d), env_ids=env_ids_t
-        )
 
-        default_jp = self._robot.data.default_joint_pos[env_ids_t]
-        default_jv = self._robot.data.default_joint_vel[env_ids_t]
-        self._robot.write_joint_state_to_sim(default_jp, default_jv, env_ids=env_ids_t)
+        # Body-frame walk velocity → world frame via the reconstructed quat.
+        # Standing-init envs keep zero velocity (lin/ang_vel_b are zero there).
+        quat_w = robot_pose[:, 3:7]
+        root_vel = torch.zeros(n, 6, device=d)
+        root_vel[:, 0:3] = quat_apply(quat_w, lin_vel_b)
+        root_vel[:, 3:6] = quat_apply(quat_w, ang_vel_b)
+        self._robot.write_root_velocity_to_sim(root_vel, env_ids=env_ids_t)
+
+        self._robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids_t)
+
+        # Pre-seed the PD setpoint to the injected pose (walk-init envs only) so
+        # step-1's last_action obs / action_rate penalty are continuous.
+        if self._init_states_loaded and self.cfg.init_state_seed_action:
+            self._seed_action_to_pose(env_ids_t, joint_pos, use_walk)
 
         # ----- Ball pose ---------------------------------------------------
         ball_dist = _uniform(*self.cfg.ball_spawn_distance_range, n=n, device=d)
@@ -1453,6 +1632,24 @@ class SoccerKickCommandCfg(CommandTermCfg):
     # kicking behaviour. At deploy time the ``stop_flag`` observation input is
     # driven externally to switch between kick and stand-still on demand.
     enable_stop_after_kick: bool = True
+
+    # --- Walk-state initialization (walk→kick transition) -----------------
+    # Path to a ``.pt`` dataset of mid-walk robot states collected with the
+    # locomotion ``play.py --dump_states``. When set, a fraction of envs are
+    # reset into a sampled walk state (joint pos/vel + base height/tilt + base
+    # velocity) instead of the default standing pose, so the kick policy learns
+    # to strike out of a walking gait. ``None`` = original standing reset.
+    init_state_dataset_path: str | None = None
+    # Per-env probability of using a sampled walk state (vs the default standing
+    # pose) at reset. <1.0 mixes walk-init and standing-init episodes, which
+    # keeps the from-standstill kick competent too.
+    init_state_prob: float = 1.0
+    # Pre-seed the action buffer to the injected joint pose so the PD target /
+    # last_action obs / action_rate penalty are continuous on the first step
+    # (minimizes the setpoint-discontinuity transient). Name of the joint-
+    # position action term to seed.
+    init_state_seed_action: bool = True
+    init_state_action_term: str = "joint_pos"
 
     # Debug-vis sub-toggles (only matter when ``debug_vis=True``). The
     # direction arrows (target / goal / pass) render as large stretched arrows

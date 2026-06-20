@@ -51,6 +51,20 @@ parser.add_argument(
     default=2.0,
     help="Reward weight for --near_foot_kick.",
 )
+# walk→kick transition: reset into sampled mid-walk states (soccer kick task)
+parser.add_argument(
+    "--walk_init",
+    type=str,
+    default=None,
+    help="Path to a .pt walk-state dataset (from play.py --dump_states). When set, the "
+    "soccer kick task resets a fraction of envs into a sampled mid-walk pose/velocity.",
+)
+parser.add_argument(
+    "--walk_init_prob",
+    type=float,
+    default=1.0,
+    help="Per-env probability of using a walk-init state vs the default standing pose.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -303,6 +317,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             )
         else:
             print("[WARN] --near_foot_kick set but env_cfg has no 'near_foot_kick' reward term; ignoring.")
+    if args_cli.walk_init is not None:
+        commands_cfg = getattr(env_cfg, "commands", None)
+        soccer_cmd = getattr(commands_cfg, "soccer_kick", None) if commands_cfg is not None else None
+        if soccer_cmd is not None and hasattr(soccer_cmd, "init_state_dataset_path"):
+            soccer_cmd.init_state_dataset_path = args_cli.walk_init
+            soccer_cmd.init_state_prob = args_cli.walk_init_prob
+            print(
+                f"[INFO] Walk-init ENABLED from {args_cli.walk_init!r} "
+                f"(prob={args_cli.walk_init_prob})."
+            )
+        else:
+            print("[WARN] --walk_init set but env_cfg has no 'soccer_kick' command term; ignoring.")
 
     # multi-gpu training configuration
     if args_cli.distributed:

@@ -314,9 +314,14 @@ class KickErrorWeightCurriculum(ManagerTermBase):
         # Curriculum runs before reward_manager.reset, so the per-env episode
         # sums still hold this episode's accumulated (weighted) contact reward.
         sums = rm._episode_sums.get(self.contact_term)
-        if sums is not None and len(env_ids) > 0:
-            kc_batch = float(sums[env_ids].mean().item()) / float(env.max_episode_length_s)
-            self._ema = self.alpha * kc_batch + (1.0 - self.alpha) * self._ema
+        if sums is not None:
+            # ``env_ids`` may be a slice (e.g. ``slice(None)`` when the curriculum
+            # is computed for all envs during a resume restore), which has no
+            # ``len``. Treat a slice as "all envs".
+            n_ids = sums.shape[0] if isinstance(env_ids, slice) else len(env_ids)
+            if n_ids > 0:
+                kc_batch = float(sums[env_ids].mean().item()) / float(env.max_episode_length_s)
+                self._ema = self.alpha * kc_batch + (1.0 - self.alpha) * self._ema
 
         # Apply the scaled weights live.
         scale = self._ema * self.gain
