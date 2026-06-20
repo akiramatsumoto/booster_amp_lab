@@ -14,3 +14,6 @@
 # Small, pinned reproduction artifacts.  Keep these directly in git so the v44
 # frozen AMP base and Stage3 world model are available even without git-lfs.
 checkpoints/recovery_controller_v44/*.pt -filter -diff -merge -text
+# walk→kick init-state dataset: shipped directly in git (not LFS) so it pushes
+# to public forks and is available without git-lfs.
+checkpoints/walk_states.pt -filter -diff -merge -text
