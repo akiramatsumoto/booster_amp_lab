@@ -65,6 +65,12 @@ parser.add_argument(
     default=1.0,
     help="Per-env probability of using a walk-init state vs the default standing pose.",
 )
+parser.add_argument(
+    "--deploy_default_pose",
+    action="store_true",
+    default=False,
+    help="Use the deploy DEFAULT_ANGLES pose as the standing reset pose (soccer kick task).",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -329,6 +335,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             )
         else:
             print("[WARN] --walk_init set but env_cfg has no 'soccer_kick' command term; ignoring.")
+    if args_cli.deploy_default_pose:
+        commands_cfg = getattr(env_cfg, "commands", None)
+        soccer_cmd = getattr(commands_cfg, "soccer_kick", None) if commands_cfg is not None else None
+        if soccer_cmd is not None and hasattr(soccer_cmd, "use_deploy_default_pose"):
+            soccer_cmd.use_deploy_default_pose = True
+            print("[INFO] Standing reset pose set to deploy DEFAULT_ANGLES.")
+        else:
+            print("[WARN] --deploy_default_pose set but env_cfg has no 'soccer_kick' command term; ignoring.")
 
     # multi-gpu training configuration
     if args_cli.distributed:

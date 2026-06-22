@@ -1858,3 +1858,27 @@ def _nearest_foot_velocity_b(cmd: SoccerKickCommand) -> torch.Tensor:
     env_ids = torch.arange(cmd.num_envs, device=cmd.device)
     vel_w = foot_vel_w[env_ids, nearest]
     return quat_apply_inverse(cmd.robot_yaw_quat, vel_w)
+
+
+def torque_near_limit(
+    env: "ManagerBasedRLEnv",
+    threshold: float = 0.8,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize joint torques that operate close to their effort limit.
+
+    Each joint's applied torque is normalized by its effort limit; the amount by
+    which ``|tau| / effort_limit`` exceeds ``threshold`` is squared and summed
+    over joints. The penalty is therefore zero in the normal operating band and
+    rises sharply as torques approach saturation, discouraging the policy from
+    relying on near-peak torque (which is fragile to model/hardware mismatch).
+
+    Note: uses ``applied_torque`` (post-clamp), available for explicit actuators
+    such as the K1's ``DelayedPDActuator`` legs/arms.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    ids = asset_cfg.joint_ids
+    tau = asset.data.applied_torque[:, ids]
+    lim = asset.data.joint_effort_limits[:, ids].clamp(min=1.0e-6)
+    excess = (tau.abs() / lim - threshold).clamp(min=0.0)
+    return torch.sum(torch.square(excess), dim=1)

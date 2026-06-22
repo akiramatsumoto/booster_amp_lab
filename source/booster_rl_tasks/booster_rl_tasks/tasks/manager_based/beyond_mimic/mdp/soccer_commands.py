@@ -56,14 +56,15 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
-# Upper-body (head + arms) joint angles (rad) from the deploy DEFAULT_ANGLES
-# standing pose. The walk dataset only carries the 12 leg joints (the gait
-# robot's arms/head are fixed), so when a walk state is injected as a kick init
-# state these upper-body DOFs are held here (velocity 0). Values are the
-# upper-body slice of the firmware DEFAULT_ANGLES array, keyed by K1 joint name.
-_DEPLOY_DEFAULT_UPPER_BODY: dict[str, float] = {
+# Full deploy DEFAULT_ANGLES standing pose (rad), keyed by K1 joint name. This
+# mirrors the firmware DEFAULT_ANGLES array. Two uses:
+#   * upper-body slice fills the arms/head when a (leg-only) walk state is
+#     injected as a kick init state (see ``_load_init_states``);
+#   * the whole pose can replace the default standing reset when
+#     ``use_deploy_default_pose`` is set (see ``_resample_command``).
+_DEPLOY_DEFAULT_ANGLES: dict[str, float] = {
     "AAHead_yaw": 0.0,
-    "Head_pitch": 0.0,
+    "Head_pitch": 0.6,
     "ALeft_Shoulder_Pitch": 0.3,
     "Left_Shoulder_Roll": -1.374,
     "Left_Elbow_Pitch": 0.0,
@@ -72,6 +73,36 @@ _DEPLOY_DEFAULT_UPPER_BODY: dict[str, float] = {
     "Right_Shoulder_Roll": 1.374,
     "Right_Elbow_Pitch": 0.0,
     "Right_Elbow_Yaw": 1.2,
+    "Left_Hip_Pitch": -0.26,
+    "Left_Hip_Roll": 0.0,
+    "Left_Hip_Yaw": 0.0,
+    "Left_Knee_Pitch": 0.52,
+    "Left_Ankle_Pitch": -0.26,
+    "Left_Ankle_Roll": 0.0,
+    "Right_Hip_Pitch": -0.26,
+    "Right_Hip_Roll": 0.0,
+    "Right_Hip_Yaw": 0.0,
+    "Right_Knee_Pitch": 0.52,
+    "Right_Ankle_Pitch": -0.26,
+    "Right_Ankle_Roll": 0.0,
+}
+
+# Upper-body (head + arms) subset, used to hold the arms/head when a leg-only
+# walk state is injected (the walk dataset carries only the 12 leg joints).
+_DEPLOY_DEFAULT_UPPER_BODY: dict[str, float] = {
+    k: _DEPLOY_DEFAULT_ANGLES[k]
+    for k in (
+        "AAHead_yaw",
+        "Head_pitch",
+        "ALeft_Shoulder_Pitch",
+        "Left_Shoulder_Roll",
+        "Left_Elbow_Pitch",
+        "Left_Elbow_Yaw",
+        "ARight_Shoulder_Pitch",
+        "Right_Shoulder_Roll",
+        "Right_Elbow_Pitch",
+        "Right_Elbow_Yaw",
+    )
 }
 
 
@@ -295,6 +326,15 @@ class SoccerKickCommand(CommandTerm):
         self._init_states_loaded: bool = False
         if cfg.init_state_dataset_path is not None:
             self._load_init_states(cfg.init_state_dataset_path)
+
+        # Optional override of the default standing reset pose with the deploy
+        # DEFAULT_ANGLES pose (per-joint, by name; missing joints → 0.0). When
+        # ``cfg.use_deploy_default_pose`` is set, non-walk-init envs reset here
+        # (velocity 0) instead of ``robot.data.default_joint_pos``.
+        self._deploy_default_jp = torch.tensor(
+            [_DEPLOY_DEFAULT_ANGLES.get(n, 0.0) for n in self._robot.data.joint_names],
+            device=d,
+        )
 
     # --- Walk-state initialization helpers ---------------------------------
     def _load_init_states(self, path: str) -> None:
@@ -700,8 +740,15 @@ class SoccerKickCommand(CommandTerm):
         base_z = torch.full((n,), float(self.cfg.robot_spawn_z), device=d)
         base_roll = torch.zeros(n, device=d)
         base_pitch = torch.zeros(n, device=d)
-        joint_pos = self._robot.data.default_joint_pos[env_ids_t].clone()
-        joint_vel = self._robot.data.default_joint_vel[env_ids_t].clone()
+        if self.cfg.use_deploy_default_pose:
+            # Standing reset uses the deploy DEFAULT_ANGLES pose (vel 0) at the
+            # FK-matched base height so the bent-knee pose's feet stay on ground.
+            joint_pos = self._deploy_default_jp.unsqueeze(0).expand(n, -1).clone()
+            joint_vel = torch.zeros_like(joint_pos)
+            base_z = torch.full((n,), float(self.cfg.deploy_default_pose_height), device=d)
+        else:
+            joint_pos = self._robot.data.default_joint_pos[env_ids_t].clone()
+            joint_vel = self._robot.data.default_joint_vel[env_ids_t].clone()
         lin_vel_b = torch.zeros(n, 3, device=d)
         ang_vel_b = torch.zeros(n, 3, device=d)
 
@@ -1650,6 +1697,16 @@ class SoccerKickCommandCfg(CommandTermCfg):
     # position action term to seed.
     init_state_seed_action: bool = True
     init_state_action_term: str = "joint_pos"
+    # Replace the default standing reset pose with the deploy DEFAULT_ANGLES
+    # pose (full 22-DOF, ``_DEPLOY_DEFAULT_ANGLES``) for non-walk-init envs. With
+    # walk-init disabled this makes every episode start from DEFAULT_ANGLES;
+    # combined with walk-init it only affects the standing-init fraction.
+    use_deploy_default_pose: bool = False
+    # Base height (m) for the deploy-pose standing reset. DEFAULT_ANGLES has bent
+    # knees, so its feet sit ~1.4 cm higher than the straight-leg default at the
+    # same base height; this value (FK-derived) puts the soles at the same ground
+    # height as the ``robot_spawn_z`` straight-leg reset, avoiding a drop on reset.
+    deploy_default_pose_height: float = 0.556
 
     # Debug-vis sub-toggles (only matter when ``debug_vis=True``). The
     # direction arrows (target / goal / pass) render as large stretched arrows

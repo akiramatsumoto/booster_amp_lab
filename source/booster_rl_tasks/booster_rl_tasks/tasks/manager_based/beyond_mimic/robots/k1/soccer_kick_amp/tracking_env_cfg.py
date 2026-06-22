@@ -543,6 +543,13 @@ class RewardsCfg:
     # ---- Standard regularizers (shared with locomotion baseline) ----
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-5)
+    # Penalize operating near the effort limit (|tau|/effort_limit > threshold),
+    # so the policy avoids relying on near-peak torque (fragile sim-to-real).
+    torque_near_limit = RewTerm(
+        func=mdp.soccer_rewards.torque_near_limit,
+        weight=-1.0,
+        params={"threshold": 0.7},
+    )
     dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-5.0)
     undesired_contacts = RewTerm(
