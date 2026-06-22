@@ -51,6 +51,20 @@ parser.add_argument(
     help="Override base_velocity command every step during play.",
 )
 parser.add_argument("--disable_push", action="store_true", default=False, help="Disable interval push events for play.")
+# walk→kick transition: reset into sampled mid-walk states (soccer kick task)
+parser.add_argument(
+    "--walk_init",
+    type=str,
+    default=None,
+    help="Path to a .pt walk-state dataset. When set, the soccer kick task resets a "
+    "fraction of envs into a sampled mid-walk pose/velocity (matches train.py).",
+)
+parser.add_argument(
+    "--walk_init_prob",
+    type=float,
+    default=1.0,
+    help="Per-env probability of using a walk-init state vs the default standing pose.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -189,6 +203,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             _term = getattr(env_cfg.commands, _term_name)
             if hasattr(_term, "debug_vis"):
                 _term.debug_vis = True
+
+    # walk→kick transition: reset a fraction of envs into sampled mid-walk states
+    # (mirrors train.py so play reproduces the training-time initialization).
+    if args_cli.walk_init is not None:
+        commands_cfg = getattr(env_cfg, "commands", None)
+        soccer_cmd = getattr(commands_cfg, "soccer_kick", None) if commands_cfg is not None else None
+        if soccer_cmd is not None and hasattr(soccer_cmd, "init_state_dataset_path"):
+            soccer_cmd.init_state_dataset_path = args_cli.walk_init
+            soccer_cmd.init_state_prob = args_cli.walk_init_prob
+            print(
+                f"[INFO] Walk-init ENABLED from {args_cli.walk_init!r} "
+                f"(prob={args_cli.walk_init_prob})."
+            )
+        else:
+            print("[WARN] --walk_init set but env_cfg has no 'soccer_kick' command term; ignoring.")
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)

@@ -124,6 +124,10 @@ class CommandsCfg:
         # ~3.3 m/s instead of the uniform 4.5).
         target_strength_range=(1.0, 8.0),
         target_strength_sample_exponent=2.0,
+        # Shoot-only task: always aim at the goal (pass handled by a separate
+        # pass-only task). is_shoot stays in the obs (always 1) to keep the
+        # observation layout unchanged.
+        shoot_prob=1.0,
     )
 
 
@@ -432,7 +436,7 @@ class RewardsCfg:
     )
     kick_success = RewTerm(
         func=mdp.soccer_rewards.kick_success,
-        weight=10.0,
+        weight=60.0,
         params={"command_name": "soccer_kick"},
     )
     goal_scored = RewTerm(
@@ -613,7 +617,9 @@ class CurriculumCfg:
             "gain": 1000.0,
             "ema_alpha": 0.1,
             "contact_term": "kick_contact",
-            "scaled_terms": ["kick_angle_error", "kick_strength_error"],
+            # torque_near_limit ramps with the same ema: effective weight =
+            # base(-1.0) * ema * gain(1000) = kick_error_weight * 1000 * -1.0.
+            "scaled_terms": ["kick_angle_error", "kick_strength_error", "torque_near_limit"],
             "max_abs_weight": None,
         },
     )
