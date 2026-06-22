@@ -32,18 +32,20 @@ parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
 parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
-# experimental left-right symmetry + near-foot kicking (soccer kick task)
+# experimental left-right symmetry + near-foot kicking (soccer kick task).
+# Default ON for the soccer kick task; pass --no-symmetry / --no-near_foot_kick
+# to disable. Both are gated to the soccer kick task, so they no-op elsewhere.
 parser.add_argument(
     "--symmetry",
-    action="store_true",
-    default=False,
-    help="Enable left-right symmetry data augmentation (soccer kick task).",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Enable left-right symmetry data augmentation (soccer kick task). Default on.",
 )
 parser.add_argument(
     "--near_foot_kick",
-    action="store_true",
-    default=False,
-    help="Reward kicking with the foot on the ball's spawn side (soccer kick task).",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Reward kicking with the foot on the ball's spawn side (soccer kick task). Default on.",
 )
 parser.add_argument(
     "--near_foot_kick_weight",
@@ -308,12 +310,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
     # experimental toggles (soccer kick task) -------------------------------
-    if args_cli.symmetry:
+    # Gate symmetry to the soccer kick task: ``_SYMMETRY_FUNC`` is soccer-specific,
+    # so applying it to other tasks (now that the flag defaults on) would be wrong.
+    _commands_cfg = getattr(env_cfg, "commands", None)
+    _is_soccer_kick = _commands_cfg is not None and hasattr(_commands_cfg, "soccer_kick")
+    if args_cli.symmetry and _is_soccer_kick:
         agent_cfg.algorithm.symmetry_cfg = RslRlSymmetryCfg(
             use_data_augmentation=True,
             data_augmentation_func=_SYMMETRY_FUNC,
         )
         print("[INFO] Left-right symmetry data augmentation ENABLED.")
+    elif args_cli.symmetry and not _is_soccer_kick:
+        print("[INFO] --symmetry is soccer-kick-specific; skipping for this task.")
     if args_cli.near_foot_kick:
         rewards_cfg = getattr(env_cfg, "rewards", None)
         if rewards_cfg is not None and hasattr(rewards_cfg, "near_foot_kick"):
