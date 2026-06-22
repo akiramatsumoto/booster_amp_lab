@@ -1860,6 +1860,28 @@ def _nearest_foot_velocity_b(cmd: SoccerKickCommand) -> torch.Tensor:
     return quat_apply_inverse(cmd.robot_yaw_quat, vel_w)
 
 
+def _actuator_effort_limits(asset: Articulation) -> torch.Tensor:
+    """Per-joint effort limit that actually clamps applied torque (cached).
+
+    NOT ``data.joint_effort_limits`` — for explicit actuators (the K1's
+    ``DelayedPDActuator`` legs/arms/feet/head) that field holds the PhysX
+    ``effort_limit_sim`` which defaults to 1e9 when unset. The value that clips
+    the applied torque is each actuator model's ``effort_limit`` (14/20/6 N·m,
+    leg dict), so assemble it from ``asset.actuators``. Limits are static here
+    (no effort-limit domain randomization), so the result is cached on the asset.
+    """
+    cached = getattr(asset, "_torque_near_limit_cache", None)
+    if cached is not None:
+        return cached
+    num_envs, num_joints = asset.data.applied_torque.shape
+    lim = torch.full((num_envs, num_joints), float("inf"), device=asset.device)
+    for act in asset.actuators.values():
+        el = act.effort_limit
+        lim[:, act.joint_indices] = el if isinstance(el, torch.Tensor) else float(el)
+    asset._torque_near_limit_cache = lim
+    return lim
+
+
 def torque_near_limit(
     env: "ManagerBasedRLEnv",
     threshold: float = 0.8,
@@ -1867,18 +1889,15 @@ def torque_near_limit(
 ) -> torch.Tensor:
     """Penalize joint torques that operate close to their effort limit.
 
-    Each joint's applied torque is normalized by its effort limit; the amount by
-    which ``|tau| / effort_limit`` exceeds ``threshold`` is squared and summed
-    over joints. The penalty is therefore zero in the normal operating band and
+    Each joint's applied torque is normalized by its actuator effort limit; the
+    amount by which ``|tau| / effort_limit`` exceeds ``threshold`` is squared and
+    summed over joints. The penalty is zero in the normal operating band and
     rises sharply as torques approach saturation, discouraging the policy from
     relying on near-peak torque (which is fragile to model/hardware mismatch).
-
-    Note: uses ``applied_torque`` (post-clamp), available for explicit actuators
-    such as the K1's ``DelayedPDActuator`` legs/arms.
     """
     asset: Articulation = env.scene[asset_cfg.name]
     ids = asset_cfg.joint_ids
     tau = asset.data.applied_torque[:, ids]
-    lim = asset.data.joint_effort_limits[:, ids].clamp(min=1.0e-6)
+    lim = _actuator_effort_limits(asset)[:, ids].clamp(min=1.0e-6)
     excess = (tau.abs() / lim - threshold).clamp(min=0.0)
     return torch.sum(torch.square(excess), dim=1)
