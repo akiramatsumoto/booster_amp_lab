@@ -1023,16 +1023,26 @@ def alive_reward(env: "ManagerBasedRLEnv") -> torch.Tensor:
     return torch.ones(env.num_envs, device=env.device)
 
 
-def terminated_penalty(env: "ManagerBasedRLEnv") -> torch.Tensor:
-    """Returns 1 on the step a non-timeout termination fires; 0 otherwise.
+def terminated_penalty(
+    env: "ManagerBasedRLEnv",
+    fall_terms: tuple[str, ...] = ("fall_height", "fall_tilt"),
+) -> torch.Tensor:
+    """Returns 1 on the step a *fall* termination fires; 0 otherwise.
 
-    This relies on the termination manager's ``dones`` and ``time_outs`` buffers.
+    Only fall terminations (``fall_height`` / ``fall_tilt``) are penalized. The
+    other non-timeout terminations — ``goal_scored_done`` (a success!) and
+    ``ball_out`` — must NOT incur the heavy terminated penalty, so they are
+    excluded here. (The generic "any non-timeout done" version inherited from the
+    locomotion baseline wrongly lumped a scored goal in with a fall.)
     """
     if not hasattr(env, "termination_manager"):
         return torch.zeros(env.num_envs, device=env.device)
-    dones = env.termination_manager.dones.float()
-    timeouts = env.termination_manager.time_outs.float()
-    return (dones * (1.0 - timeouts)).clamp_max(1.0)
+    tm = env.termination_manager
+    out = torch.zeros(env.num_envs, device=env.device)
+    for name in fall_terms:
+        if name in tm.active_terms:
+            out = out + tm.get_term(name).float()
+    return out.clamp_max(1.0)
 
 
 # =========================================================================

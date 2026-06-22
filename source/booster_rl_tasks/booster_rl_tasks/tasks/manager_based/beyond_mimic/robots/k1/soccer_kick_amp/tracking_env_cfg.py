@@ -441,7 +441,7 @@ class RewardsCfg:
     )
     goal_scored = RewTerm(
         func=mdp.soccer_rewards.goal_scored_reward,
-        weight=250.0,
+        weight=30.0,
         params={"command_name": "soccer_kick"},
     )
     # Experimental: reward kicking with the foot on the ball's spawn side.
@@ -616,15 +616,16 @@ class CurriculumCfg:
     )
     # Ramp the heavy stability/quality terms with the kick-contact return, the
     # same way ``kick_error_weight`` ramps the direction/strength penalties.
-    # ``pelvis_orientation`` (-5) and ``goal_scored`` (250) are far too strong
-    # for the *early* policy: they make the balance-risky kick swing net-negative
-    # in expectation, so the policy freezes into a safe approach-and-search local
-    # optimum and never attempts a kick. With ``scale_cap=1.0`` each weight ramps
-    # from 0 up to its configured base value (the full strength above) and stops
-    # there — so the policy can freely explore the kick motion while contact is
-    # rare, and the stability/goal terms only tighten once contact is
-    # established. gain=100 reaches full strength at ema(kick_contact)≈0.01 (≈
-    # where ``kick_error_weight`` already considers contact meaningful).
+    # ``terminated`` (-200), ``pelvis_orientation`` (-5) and ``goal_scored``
+    # (250) are far too strong for the *early* policy: the fall penalty in
+    # particular makes the balance-risky kick swing net-negative in expectation,
+    # so the policy freezes into a safe approach-and-search local optimum and
+    # never attempts a kick. With ``scale_cap=1.0`` each weight ramps from 0 up
+    # to its configured base value (the full strength above) and stops there —
+    # so the policy can freely explore the kick motion while contact is rare,
+    # and the stability/goal terms only tighten once contact is established.
+    # gain=100 reaches full strength at ema(kick_contact)≈0.01 (≈ where
+    # ``kick_error_weight`` already considers contact meaningful).
     contact_gated_weight = CurrTerm(
         func=mdp.soccer_curriculums.KickErrorWeightCurriculum,
         params={
@@ -636,17 +637,19 @@ class CurriculumCfg:
             "max_abs_weight": None,
         },
     )
-    # ``terminated`` ramps separately (linear, uncapped) so the fall penalty can
-    # grow past its -200 base once contact is reliable. gain=562 is tuned so that
-    # at ema(kick_contact)≈0.0089 the weight is base(-200) * 0.0089 * 562 ≈ -1000.
+    # ``terminated`` ramps separately so its ceiling can sit above the -200 base.
+    # It now only fires on fall terminations (goal/ball-out are excluded in
+    # ``terminated_penalty``), so a stronger fall penalty is safe. scale_cap=2.0
+    # caps the weight at base(-200) * 2 = -400; gain=200 reaches that cap at
+    # ema(kick_contact)≈0.01, the same contact threshold as the group above.
     terminated_weight = CurrTerm(
         func=mdp.soccer_curriculums.KickErrorWeightCurriculum,
         params={
-            "gain": 562.0,
+            "gain": 200.0,
             "ema_alpha": 0.1,
             "contact_term": "kick_contact",
             "scaled_terms": ["terminated"],
-            "scale_cap": None,
+            "scale_cap": 2.0,
             "max_abs_weight": None,
         },
     )
