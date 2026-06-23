@@ -519,7 +519,7 @@ class RewardsCfg:
         weight=5.0,
         params={"command_name": "soccer_kick"},
     )
-    alive = RewTerm(func=mdp.soccer_rewards.alive_reward, weight=0.5)
+    alive = RewTerm(func=mdp.soccer_rewards.alive_reward, weight=3.0)
     terminated = RewTerm(func=mdp.soccer_rewards.terminated_penalty, weight=-200.0)
 
     # ---- V3.3 search-for-ball shaping ----
