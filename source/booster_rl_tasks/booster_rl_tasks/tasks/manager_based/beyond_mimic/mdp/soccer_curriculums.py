@@ -269,7 +269,10 @@ class KickErrorWeightCurriculum(ManagerTermBase):
     ``-0.5 * 0.0089 * 1000 = -4.45``.
 
     Note: the scaling is unbounded by default — set ``max_abs_weight`` to clamp
-    the magnitude so a high contact return cannot blow up the penalties.
+    the magnitude so a high contact return cannot blow up the penalties, and
+    ``min_abs_weight`` to floor the magnitude so a term always keeps a baseline
+    strength even before the contact EMA grows (e.g. a fall penalty that must
+    bite from the start).
 
     Alternatively, set ``scale_cap`` to clamp the ``ema * gain`` multiplier
     itself. With ``scale_cap=1.0`` each weight ramps from 0 up to *exactly* its
@@ -289,6 +292,7 @@ class KickErrorWeightCurriculum(ManagerTermBase):
             p.get("scaled_terms", ["kick_angle_error", "kick_strength_error"])
         )
         self.max_abs_weight = p.get("max_abs_weight", None)
+        self.min_abs_weight = p.get("min_abs_weight", None)
         self.scale_cap = p.get("scale_cap", None)
         self._ema: float = 0.0
         self._base: dict[str, float] | None = None  # captured on first call
@@ -302,6 +306,7 @@ class KickErrorWeightCurriculum(ManagerTermBase):
         contact_term: str = "kick_contact",
         scaled_terms: Sequence[str] = ("kick_angle_error", "kick_strength_error"),
         max_abs_weight: float | None = None,
+        min_abs_weight: float | None = None,
         scale_cap: float | None = None,
     ) -> float:
         rm = env.reward_manager
@@ -332,5 +337,13 @@ class KickErrorWeightCurriculum(ManagerTermBase):
             if self.max_abs_weight is not None:
                 cap = abs(float(self.max_abs_weight))
                 w = max(-cap, min(cap, w))
+            if self.min_abs_weight is not None:
+                # Floor the magnitude so the term never ramps below a baseline
+                # strength (keeps the base term's sign). Useful for penalties
+                # that must always bite even before the contact EMA grows.
+                floor = abs(float(self.min_abs_weight))
+                if abs(w) < floor:
+                    sign = -1.0 if self._base[n] < 0.0 else 1.0
+                    w = sign * floor
             rm.get_term_cfg(n).weight = w
         return self._ema

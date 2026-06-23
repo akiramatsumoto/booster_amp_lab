@@ -642,6 +642,10 @@ class CurriculumCfg:
     # ``terminated_penalty``), so a stronger fall penalty is safe. scale_cap=2.0
     # caps the weight at base(-200) * 2 = -400; gain=200 reaches that cap at
     # ema(kick_contact)≈0.01, the same contact threshold as the group above.
+    # ``min_abs_weight=100`` floors the fall penalty at -100 even when the
+    # contact EMA is ~0, so the policy is always punished for falling (otherwise
+    # the contact gate keeps the penalty near 0 → the policy never learns to
+    # stay upright → contact never happens → chicken-and-egg).
     terminated_weight = CurrTerm(
         func=mdp.soccer_curriculums.KickErrorWeightCurriculum,
         params={
@@ -651,6 +655,7 @@ class CurriculumCfg:
             "scaled_terms": ["terminated"],
             "scale_cap": 2.0,
             "max_abs_weight": None,
+            "min_abs_weight": 100.0,
         },
     )
 
