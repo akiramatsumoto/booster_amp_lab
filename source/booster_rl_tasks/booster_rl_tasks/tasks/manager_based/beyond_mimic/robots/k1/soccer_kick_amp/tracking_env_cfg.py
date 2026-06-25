@@ -128,6 +128,13 @@ class CommandsCfg:
         # pass-only task). is_shoot stays in the obs (always 1) to keep the
         # observation layout unchanged.
         shoot_prob=1.0,
+        # Walk→kick is a hard task requirement: the dataset is always loaded so
+        # walk-init is built into the task (no longer CLI-opt-in). The actual
+        # per-env probability starts at 0 and is ramped up by the
+        # ``walk_init_prob`` curriculum once survival is reliable — starting it
+        # high collapses survival (every reset becomes a dynamic-balance problem).
+        init_state_dataset_path="checkpoints/walk_states.pt",
+        init_state_prob=0.0,
     )
 
 
@@ -138,8 +145,18 @@ class CommandsCfg:
 
 @configclass
 class ActionsCfg:
+    # Delta-from-default action parameterization: the PD target is
+    # ``raw * scale + default_joint_pos``, so the zero action holds the default
+    # standing pose and the policy only outputs small corrections. This is far
+    # more stable than absolute targets (use_default_offset=False, scale=1.0),
+    # which forced the policy to actively reproduce the whole pose every step and
+    # left a high "wobble floor" of falls. ⚠ Changes the action space → retrain
+    # from scratch (cannot resume an absolute-target checkpoint).
     joint_pos = mdp.JointPositionActionCfg(
-        asset_name="robot", joint_names=[".*"], use_default_offset=False
+        asset_name="robot",
+        joint_names=[".*"],
+        use_default_offset=True,
+        scale=0.25,
     )
 
 
@@ -516,10 +533,10 @@ class RewardsCfg:
     # it also helps the policy survive the unstable follow-through.
     post_kick_alive = RewTerm(
         func=mdp.soccer_rewards.post_kick_alive,
-        weight=5.0,
+        weight=8.0,
         params={"command_name": "soccer_kick"},
     )
-    alive = RewTerm(func=mdp.soccer_rewards.alive_reward, weight=3.0)
+    alive = RewTerm(func=mdp.soccer_rewards.alive_reward, weight=4.0)
     terminated = RewTerm(func=mdp.soccer_rewards.terminated_penalty, weight=-200.0)
 
     # ---- V3.3 search-for-ball shaping ----
@@ -545,7 +562,11 @@ class RewardsCfg:
     )
 
     # ---- Standard regularizers (shared with locomotion baseline) ----
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+    # Stronger action-rate smoothing → less jerky control → fewer balance-loss
+    # falls. (For survival the smoothing must be *increased*, not decreased: the
+    # large action_rate penalty seen in logs is a symptom of jerky exploration,
+    # and this term fights jerk rather than causing it.)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.02)
     dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-5)
     dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-5.0)
@@ -592,13 +613,40 @@ class TerminationsCfg:
 class CurriculumCfg:
     # Ball distance is fixed at 1 m (see CommandsCfg.soccer_kick); the distance
     # curriculum is intentionally disabled.
+    # common_step_counter increments by num_steps_per_env(24) per iteration, so
+    # check_interval_steps = 24 * N checks every N iterations. Level UP when the
+    # fall-rate EMA stays < 0.15 for `consecutive_required` checks; level DOWN
+    # when it exceeds 0.30 for `down_consecutive_required` checks (reacts to
+    # survival regressions faster than it advances). 0.15–0.30 is a deadband.
     fall_rate_rand = CurrTerm(
         func=mdp.soccer_curriculums.FallRateDomainRandCurriculum,
         params={
             "fall_rate_threshold": 0.15,
             "consecutive_required": 5,
+            "down_fall_rate_threshold": 0.30,
+            "down_consecutive_required": 2,
             "ema_alpha": 0.1,
-            "check_interval_steps": 4096 * 24,
+            "check_interval_steps": 24 * 20,  # ≈ every 20 iterations
+        },
+    )
+    # Ramp the walk-init probability up from 0 as the fall rate stays low, so
+    # the policy bootstraps survival from standing before it has to handle the
+    # mid-walk dynamic starts. Walk-init itself is mandatory (dataset always
+    # loaded in CommandsCfg); this only schedules how often it fires.
+    walk_init_prob = CurrTerm(
+        func=mdp.soccer_curriculums.WalkInitProbCurriculum,
+        params={
+            "command_name": "soccer_kick",
+            "fall_rate_threshold": 0.15,
+            "consecutive_required": 5,
+            "down_fall_rate_threshold": 0.30,
+            "down_consecutive_required": 2,
+            "ema_alpha": 0.1,
+            "check_interval_steps": 24 * 20,  # ≈ every 20 iterations
+            "prob_start": 0.0,
+            "prob_step": 0.1,
+            "prob_min": 0.0,
+            "prob_max": 1.0,
         },
     )
     # Ramp the kick angle/strength error penalties with the kick-contact return:
@@ -637,27 +685,12 @@ class CurriculumCfg:
             "max_abs_weight": None,
         },
     )
-    # ``terminated`` ramps separately so its ceiling can sit above the -200 base.
-    # It now only fires on fall terminations (goal/ball-out are excluded in
-    # ``terminated_penalty``), so a stronger fall penalty is safe. scale_cap=2.0
-    # caps the weight at base(-200) * 2 = -400; gain=200 reaches that cap at
-    # ema(kick_contact)≈0.01, the same contact threshold as the group above.
-    # ``min_abs_weight=100`` floors the fall penalty at -100 even when the
-    # contact EMA is ~0, so the policy is always punished for falling (otherwise
-    # the contact gate keeps the penalty near 0 → the policy never learns to
-    # stay upright → contact never happens → chicken-and-egg).
-    terminated_weight = CurrTerm(
-        func=mdp.soccer_curriculums.KickErrorWeightCurriculum,
-        params={
-            "gain": 200.0,
-            "ema_alpha": 0.1,
-            "contact_term": "kick_contact",
-            "scaled_terms": ["terminated"],
-            "scale_cap": 2.0,
-            "max_abs_weight": None,
-            "min_abs_weight": 100.0,
-        },
-    )
+    # ``terminated`` is a plain fixed fall penalty (-200, see RewardsCfg). It is
+    # intentionally NOT on a curriculum: it fires only on fall terminations, and
+    # the residual falls are a balance-*capability* problem, not an incentive
+    # one — ramping the fall penalty does little for survival and over-strong
+    # values just make the policy freeze. Survival is shaped by the dense
+    # ``alive`` / ``post_kick_alive`` rewards and smooth control instead.
 
 
 # =========================================================================

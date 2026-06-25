@@ -21,12 +21,18 @@ if TYPE_CHECKING:
 class FallRateDomainRandCurriculum(ManagerTermBase):
     """Fall-rate-gated domain randomization curriculum.
 
-    Tracks a per-batch EMA of fall rate (fall_height | fall_tilt).
-    At each check interval (~1 iteration), if the EMA stays below
-    ``fall_rate_threshold`` for ``consecutive_required`` consecutive
-    checks, the curriculum advances one level and tightens the
-    randomization ranges.  A single check above the threshold resets
-    the consecutive counter.
+    Tracks a per-batch EMA of fall rate (fall_height | fall_tilt). Checks every
+    ``check_interval_steps`` of ``common_step_counter`` (which increments by
+    ``num_steps_per_env`` per iteration, so ``24 * N`` ≈ every N iterations).
+
+    The level moves *both ways* with hysteresis:
+      * UP   if the EMA stays below ``fall_rate_threshold`` for
+             ``consecutive_required`` consecutive checks (tighten randomization).
+      * DOWN if the EMA stays above ``down_fall_rate_threshold`` for
+             ``down_consecutive_required`` consecutive checks (ease off when
+             survival regresses).
+      * The band between the two thresholds is a deadband that holds the level
+        and prevents flapping.
 
     Levels
     ------
@@ -85,11 +91,14 @@ class FallRateDomainRandCurriculum(ManagerTermBase):
         p = cfg.params
         self.threshold = p.get("fall_rate_threshold", 0.15)
         self.consecutive_required = p.get("consecutive_required", 5)
+        self.down_threshold = p.get("down_fall_rate_threshold", 0.30)
+        self.down_consecutive_required = p.get("down_consecutive_required", 2)
         self.alpha = p.get("ema_alpha", 0.1)
-        self.check_interval = p.get("check_interval_steps", 4096 * 24)
+        self.check_interval = p.get("check_interval_steps", 24 * 20)
 
         self._level: int = 0
         self._consecutive: int = 0
+        self._consecutive_down: int = 0
         self._ema_fall_rate: float = 0.0
         self._last_check_step: int = -1
 
@@ -99,8 +108,10 @@ class FallRateDomainRandCurriculum(ManagerTermBase):
         env_ids: Sequence[int],
         fall_rate_threshold: float = 0.15,
         consecutive_required: int = 5,
+        down_fall_rate_threshold: float = 0.30,
+        down_consecutive_required: int = 2,
         ema_alpha: float = 0.1,
-        check_interval_steps: int = 4096 * 24,
+        check_interval_steps: int = 24 * 20,
     ) -> int:
         # --- 1. Update EMA with this batch's fall rate ---
         fall_h = env.termination_manager.get_term("fall_height")[env_ids]
@@ -116,13 +127,19 @@ class FallRateDomainRandCurriculum(ManagerTermBase):
             return self._level
         self._last_check_step = step
 
-        # --- 3. Update consecutive counter ---
+        # --- 3. Update consecutive counters (hysteresis band) ---
         if self._ema_fall_rate < self.threshold:
             self._consecutive += 1
-        else:
+            self._consecutive_down = 0
+        elif self._ema_fall_rate > self.down_threshold:
+            self._consecutive_down += 1
             self._consecutive = 0
+        else:
+            # deadband between the two thresholds: hold the level.
+            self._consecutive = 0
+            self._consecutive_down = 0
 
-        # --- 4. Level up if sustained ---
+        # --- 4. Level up if survival sustained, down if falls sustained ---
         if (
             self._consecutive >= self.consecutive_required
             and self._level < len(self.LEVELS) - 1
@@ -131,7 +148,18 @@ class FallRateDomainRandCurriculum(ManagerTermBase):
             self._consecutive = 0
             self._apply_level(env)
             print(
-                f"[FallRateCurriculum] level → {self._level}"
+                f"[FallRateCurriculum] level ↑ {self._level}"
+                f"  (ema_fall_rate={self._ema_fall_rate:.3f})"
+            )
+        elif (
+            self._consecutive_down >= self.down_consecutive_required
+            and self._level > 0
+        ):
+            self._level -= 1
+            self._consecutive_down = 0
+            self._apply_level(env)
+            print(
+                f"[FallRateCurriculum] level ↓ {self._level}"
                 f"  (ema_fall_rate={self._ema_fall_rate:.3f})"
             )
 
@@ -173,6 +201,121 @@ class FallRateDomainRandCurriculum(ManagerTermBase):
         gains_cfg = env.event_manager.get_term_cfg("randomize_actuator_gains")
         gains_cfg.params["stiffness_distribution_params"] = (lo, hi)
         gains_cfg.params["damping_distribution_params"] = (lo, hi)
+
+
+class WalkInitProbCurriculum(ManagerTermBase):
+    """Fall-rate-gated ramp of the walk-init probability.
+
+    The soccer-kick command resets a fraction ``init_state_prob`` of envs into a
+    sampled mid-walk state (see ``SoccerKickCommand._resample_command``). Starting
+    that fraction high makes every episode a hard dynamic-balance problem and
+    collapses survival; starting it at 0 trains a from-standstill policy that
+    never learns the walk→kick transition.
+
+    This curriculum keeps walk-init *always part of the task* (the dataset is
+    loaded) but adapts ``init_state_prob`` to the fall rate, mirroring
+    ``FallRateDomainRandCurriculum`` with the same hysteresis band:
+      * UP   by ``prob_step`` (toward ``prob_max``) when the fall-rate EMA stays
+             below ``fall_rate_threshold`` for ``consecutive_required`` checks.
+      * DOWN by ``prob_step`` (toward ``prob_min``) when it stays above
+             ``down_fall_rate_threshold`` for ``down_consecutive_required``
+             checks — so if raising the walk-init fraction hurts survival, it
+             backs off automatically.
+    """
+
+    def __init__(self, cfg: "CurriculumTermCfg", env: "ManagerBasedRLEnv"):
+        super().__init__(cfg, env)
+        p = cfg.params
+        self.command_name = p.get("command_name", "soccer_kick")
+        self.threshold = p.get("fall_rate_threshold", 0.15)
+        self.consecutive_required = p.get("consecutive_required", 5)
+        self.down_threshold = p.get("down_fall_rate_threshold", 0.30)
+        self.down_consecutive_required = p.get("down_consecutive_required", 2)
+        self.alpha = p.get("ema_alpha", 0.1)
+        self.check_interval = p.get("check_interval_steps", 24 * 20)
+        self.prob_start = float(p.get("prob_start", 0.0))
+        self.prob_step = float(p.get("prob_step", 0.1))
+        self.prob_min = float(p.get("prob_min", 0.0))
+        self.prob_max = float(p.get("prob_max", 1.0))
+
+        self._prob: float = self.prob_start
+        self._consecutive: int = 0
+        self._consecutive_down: int = 0
+        self._ema_fall_rate: float = 0.0
+        self._last_check_step: int = -1
+        self._applied: bool = False
+
+    def __call__(
+        self,
+        env: "ManagerBasedRLEnv",
+        env_ids: Sequence[int],
+        command_name: str = "soccer_kick",
+        fall_rate_threshold: float = 0.15,
+        consecutive_required: int = 5,
+        down_fall_rate_threshold: float = 0.30,
+        down_consecutive_required: int = 2,
+        ema_alpha: float = 0.1,
+        check_interval_steps: int = 24 * 20,
+        prob_start: float = 0.0,
+        prob_step: float = 0.1,
+        prob_min: float = 0.0,
+        prob_max: float = 1.0,
+    ) -> float:
+        term = env.command_manager.get_term(self.command_name)
+        # Pin the starting probability on the first call (overrides whatever the
+        # cfg shipped, so the ramp always begins at ``prob_start``).
+        if not self._applied:
+            term.cfg.init_state_prob = self._prob
+            self._applied = True
+
+        # --- 1. Update EMA with this batch's fall rate ---
+        fall_h = env.termination_manager.get_term("fall_height")[env_ids]
+        fall_t = env.termination_manager.get_term("fall_tilt")[env_ids]
+        batch_fall_rate = (fall_h | fall_t).float().mean().item()
+        self._ema_fall_rate = (
+            self.alpha * batch_fall_rate + (1.0 - self.alpha) * self._ema_fall_rate
+        )
+
+        # --- 2. Only evaluate at iteration boundaries ---
+        step = int(env.common_step_counter)
+        if step - self._last_check_step < self.check_interval:
+            return self._prob
+        self._last_check_step = step
+
+        # --- 3. Update consecutive counters (hysteresis band) ---
+        if self._ema_fall_rate < self.threshold:
+            self._consecutive += 1
+            self._consecutive_down = 0
+        elif self._ema_fall_rate > self.down_threshold:
+            self._consecutive_down += 1
+            self._consecutive = 0
+        else:
+            # deadband between the two thresholds: hold the probability.
+            self._consecutive = 0
+            self._consecutive_down = 0
+
+        # --- 4. Ramp probability up if survival sustained, down if falls spike ---
+        if self._consecutive >= self.consecutive_required and self._prob < self.prob_max:
+            self._prob = min(self.prob_max, self._prob + self.prob_step)
+            self._consecutive = 0
+            term.cfg.init_state_prob = self._prob
+            print(
+                f"[WalkInitProbCurriculum] init_state_prob ↑ {self._prob:.2f}"
+                f"  (ema_fall_rate={self._ema_fall_rate:.3f})"
+            )
+        elif (
+            self._consecutive_down >= self.down_consecutive_required
+            and self._prob > self.prob_min
+        ):
+            self._prob = max(self.prob_min, self._prob - self.prob_step)
+            self._consecutive_down = 0
+            term.cfg.init_state_prob = self._prob
+            print(
+                f"[WalkInitProbCurriculum] init_state_prob ↓ {self._prob:.2f}"
+                f"  (ema_fall_rate={self._ema_fall_rate:.3f})"
+            )
+
+        return self._prob
 
 
 def ball_distance_curriculum(
