@@ -594,7 +594,11 @@ class CurriculumCfg:
             "fall_rate_threshold": 0.15,
             "consecutive_required": 5,
             "ema_alpha": 0.1,
-            "check_interval_steps": 4096 * 24,
+            # 1 check per iteration: common_step_counter increments by 1 per
+            # env.step(), so one iteration == num_steps_per_env (=24) steps.
+            # (The previous 4096*24 multiplied in num_envs by mistake, making a
+            # check happen only every ~4096 iterations → ~20k iters per level.)
+            "check_interval_steps": 24,
         },
     )
     # Ramp the kick angle/strength error penalties with the kick-contact return:

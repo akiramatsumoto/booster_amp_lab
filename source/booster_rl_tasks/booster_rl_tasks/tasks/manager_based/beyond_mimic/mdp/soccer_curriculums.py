@@ -86,7 +86,9 @@ class FallRateDomainRandCurriculum(ManagerTermBase):
         self.threshold = p.get("fall_rate_threshold", 0.15)
         self.consecutive_required = p.get("consecutive_required", 5)
         self.alpha = p.get("ema_alpha", 0.1)
-        self.check_interval = p.get("check_interval_steps", 4096 * 24)
+        # ~1 iteration: common_step_counter increments by 1 per env.step(),
+        # so one iteration == num_steps_per_env (=24) steps.
+        self.check_interval = p.get("check_interval_steps", 24)
 
         self._level: int = 0
         self._consecutive: int = 0
@@ -100,7 +102,7 @@ class FallRateDomainRandCurriculum(ManagerTermBase):
         fall_rate_threshold: float = 0.15,
         consecutive_required: int = 5,
         ema_alpha: float = 0.1,
-        check_interval_steps: int = 4096 * 24,
+        check_interval_steps: int = 24,
     ) -> int:
         # --- 1. Update EMA with this batch's fall rate ---
         fall_h = env.termination_manager.get_term("fall_height")[env_ids]
