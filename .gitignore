@@ -62,6 +62,14 @@ _build
 **/logs/*
 **/recordings/*
 
+# Keep this specific run checkpoint tracked (re-include each parent level,
+# since git cannot un-ignore a file whose parent directory stays excluded).
+!**/logs/rsl_rl
+**/logs/rsl_rl/*
+!**/logs/rsl_rl/soccer_kick_amp
+**/logs/rsl_rl/soccer_kick_amp/*
+!**/logs/rsl_rl/soccer_kick_amp/10525
+
 # Pre-Trained Checkpoints
 /.pretrained_checkpoints/
 

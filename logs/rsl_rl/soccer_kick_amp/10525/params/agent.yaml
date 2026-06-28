@@ -1,0 +1,99 @@
+seed: 42
+device: cuda:0
+num_steps_per_env: 24
+max_iterations: 50000
+empirical_normalization: true
+obs_groups: {}
+clip_actions: null
+save_interval: 100
+experiment_name: soccer_kick_amp
+run_name: ''
+logger: tensorboard
+neptune_project: run
+wandb_project: run
+resume: true
+load_run: 2026-06-19_11-13-36
+load_checkpoint: model_13400.pt
+class_name: OnPolicyRunner
+policy:
+  class_name: ActorCritic
+  init_noise_std: 1.0
+  noise_std_type: log
+  state_dependent_std: false
+  actor_obs_normalization: {}
+  critic_obs_normalization: {}
+  actor_hidden_dims:
+  - 512
+  - 256
+  - 128
+  critic_hidden_dims:
+  - 512
+  - 256
+  - 128
+  activation: elu
+algorithm:
+  class_name: AMPPPO
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  learning_rate: 0.001
+  schedule: adaptive
+  gamma: 0.99
+  lam: 0.95
+  entropy_coef: 0.005
+  desired_kl: 0.01
+  max_grad_norm: 1.0
+  value_loss_coef: 1.0
+  use_clipped_value_loss: true
+  clip_param: 0.2
+  normalize_advantage_per_mini_batch: false
+  rnd_cfg: null
+  symmetry_cfg:
+    use_data_augmentation: true
+    use_mirror_loss: false
+    data_augmentation_func: booster_rl_tasks.tasks.manager_based.beyond_mimic.mdp.symmetry:compute_symmetric_states
+    mirror_loss_coeff: 0.0
+runner_class_name: AmpOnPolicyRunner
+amp_reward_coef: 0.35
+amp_motion_files:
+- /workspace/booster_amp_lab/booster_assets/motions/K1/motion_amp_expert/walk.txt
+- /workspace/booster_amp_lab/booster_assets/motions/K1/motion_amp_expert/walk2run.txt
+- /workspace/booster_amp_lab/booster_assets/motions/K1/motion_amp_expert/run.txt
+- /workspace/booster_amp_lab/booster_assets/motions/K1/motion_amp_expert/omni/kick/walk_kick.txt
+- /workspace/booster_amp_lab/booster_assets/motions/K1/motion_amp_expert/omni/kick/walk_kick_1.txt
+- /workspace/booster_amp_lab/booster_assets/motions/K1/motion_amp_expert/omni/kick/walk_kick_2.txt
+- /workspace/booster_amp_lab/booster_assets/motions/K1/motion_amp_expert/omni/kick/walk_kick_3.txt
+- /workspace/booster_amp_lab/booster_assets/motions/K1/motion_amp_expert/omni/kick/walk_kick_4.txt
+- /workspace/booster_amp_lab/booster_assets/motions/K1/motion_amp_expert/omni/kick/walk_kick_5.txt
+- /workspace/booster_amp_lab/booster_assets/motions/K1/motion_amp_expert/omni/kick/walk_kick_6.txt
+- /workspace/booster_amp_lab/booster_assets/motions/K1/motion_amp_expert/omni/kick/walk_kick_7.txt
+- /workspace/booster_amp_lab/booster_assets/motions/K1/motion_amp_expert/omni/kick/walk_kick_8.txt
+- /workspace/booster_amp_lab/booster_assets/motions/K1/motion_amp_expert/omni/kick/walk_kick_9.txt
+amp_num_preload_transitions: 200000
+amp_task_reward_lerp: 0.65
+amp_discr_hidden_dims:
+- 1024
+- 512
+- 256
+min_normalized_std:
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05
+- 0.05

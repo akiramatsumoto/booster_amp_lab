@@ -17,3 +17,6 @@ checkpoints/recovery_controller_v44/*.pt -filter -diff -merge -text
 # walk→kick init-state dataset: shipped directly in git (not LFS) so it pushes
 # to public forks and is available without git-lfs.
 checkpoints/walk_states.pt -filter -diff -merge -text
+# Tracked run checkpoint (logs/.../10525): shipped directly in git (not LFS) so
+# it pushes to public forks, which reject new LFS objects.
+logs/rsl_rl/soccer_kick_amp/10525/**/*.pt -filter -diff -merge -text
