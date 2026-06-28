@@ -515,7 +515,7 @@ class RewardsCfg:
         weight=5.0,
         params={"command_name": "soccer_kick"},
     )
-    alive = RewTerm(func=mdp.soccer_rewards.alive_reward, weight=0.5)
+    alive = RewTerm(func=mdp.soccer_rewards.alive_reward, weight=3.0)
     terminated = RewTerm(func=mdp.soccer_rewards.terminated_penalty, weight=-200.0)
 
     # ---- V3.3 search-for-ball shaping ----
@@ -592,7 +592,10 @@ class CurriculumCfg:
         func=mdp.soccer_curriculums.FallRateDomainRandCurriculum,
         params={
             "fall_rate_threshold": 0.15,
-            "consecutive_required": 5,
+            # ~100 iterations of healthy (below-threshold) fall rate to climb
+            # one level; ~20 iterations of sustained falls drop one level.
+            "consecutive_required": 100,
+            "consecutive_drop_required": 20,
             "ema_alpha": 0.1,
             # 1 check per iteration: common_step_counter increments by 1 per
             # env.step(), so one iteration == num_steps_per_env (=24) steps.

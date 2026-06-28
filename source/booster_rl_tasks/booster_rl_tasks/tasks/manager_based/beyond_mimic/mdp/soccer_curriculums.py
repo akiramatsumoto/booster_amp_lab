@@ -22,11 +22,21 @@ class FallRateDomainRandCurriculum(ManagerTermBase):
     """Fall-rate-gated domain randomization curriculum.
 
     Tracks a per-batch EMA of fall rate (fall_height | fall_tilt).
-    At each check interval (~1 iteration), if the EMA stays below
-    ``fall_rate_threshold`` for ``consecutive_required`` consecutive
-    checks, the curriculum advances one level and tightens the
-    randomization ranges.  A single check above the threshold resets
-    the consecutive counter.
+    At each check interval (~1 iteration):
+
+    * if the EMA stays below ``fall_rate_threshold`` for
+      ``consecutive_required`` consecutive checks, the curriculum advances
+      one level and tightens the randomization ranges;
+    * if the EMA stays at/above ``fall_rate_threshold`` for
+      ``consecutive_drop_required`` consecutive checks, the curriculum drops
+      one level and loosens the ranges.
+
+    The "good" and "bad" streak counters are mutually exclusive: a good check
+    resets the bad streak and vice versa, so leveling up requires a sustained
+    run of healthy iterations while a sustained run of falls walks it back.
+    With the defaults (``consecutive_required=100``,
+    ``consecutive_drop_required=20``) it takes ~100 iterations to climb a
+    level and ~20 to drop one.
 
     Levels
     ------
@@ -84,14 +94,16 @@ class FallRateDomainRandCurriculum(ManagerTermBase):
         super().__init__(cfg, env)
         p = cfg.params
         self.threshold = p.get("fall_rate_threshold", 0.15)
-        self.consecutive_required = p.get("consecutive_required", 5)
+        self.consecutive_required = p.get("consecutive_required", 100)
+        self.consecutive_drop_required = p.get("consecutive_drop_required", 20)
         self.alpha = p.get("ema_alpha", 0.1)
         # ~1 iteration: common_step_counter increments by 1 per env.step(),
         # so one iteration == num_steps_per_env (=24) steps.
         self.check_interval = p.get("check_interval_steps", 24)
 
         self._level: int = 0
-        self._consecutive: int = 0
+        self._consecutive: int = 0       # consecutive good (below-threshold) checks
+        self._consecutive_bad: int = 0   # consecutive bad (at/above-threshold) checks
         self._ema_fall_rate: float = 0.0
         self._last_check_step: int = -1
 
@@ -100,7 +112,8 @@ class FallRateDomainRandCurriculum(ManagerTermBase):
         env: "ManagerBasedRLEnv",
         env_ids: Sequence[int],
         fall_rate_threshold: float = 0.15,
-        consecutive_required: int = 5,
+        consecutive_required: int = 100,
+        consecutive_drop_required: int = 20,
         ema_alpha: float = 0.1,
         check_interval_steps: int = 24,
     ) -> int:
@@ -118,13 +131,15 @@ class FallRateDomainRandCurriculum(ManagerTermBase):
             return self._level
         self._last_check_step = step
 
-        # --- 3. Update consecutive counter ---
+        # --- 3. Update consecutive good/bad counters (mutually exclusive) ---
         if self._ema_fall_rate < self.threshold:
             self._consecutive += 1
+            self._consecutive_bad = 0
         else:
+            self._consecutive_bad += 1
             self._consecutive = 0
 
-        # --- 4. Level up if sustained ---
+        # --- 4. Level up if sustained good, level down if sustained bad ---
         if (
             self._consecutive >= self.consecutive_required
             and self._level < len(self.LEVELS) - 1
@@ -133,7 +148,18 @@ class FallRateDomainRandCurriculum(ManagerTermBase):
             self._consecutive = 0
             self._apply_level(env)
             print(
-                f"[FallRateCurriculum] level → {self._level}"
+                f"[FallRateCurriculum] level ↑ {self._level}"
+                f"  (ema_fall_rate={self._ema_fall_rate:.3f})"
+            )
+        elif (
+            self._consecutive_bad >= self.consecutive_drop_required
+            and self._level > 0
+        ):
+            self._level -= 1
+            self._consecutive_bad = 0
+            self._apply_level(env)
+            print(
+                f"[FallRateCurriculum] level ↓ {self._level}"
                 f"  (ema_fall_rate={self._ema_fall_rate:.3f})"
             )
 
