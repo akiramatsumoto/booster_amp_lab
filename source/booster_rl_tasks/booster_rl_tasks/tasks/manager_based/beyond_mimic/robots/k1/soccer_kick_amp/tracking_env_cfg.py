@@ -305,6 +305,11 @@ class ObservationsCfg:
 
 @configclass
 class EventCfg:
+    # All DR terms below are FIXED at their Level-0 (mild) values. Only the
+    # curriculum-controlled ``foot_ground_friction`` ramps with the fall-rate
+    # curriculum (CurriculumCfg.fall_rate_rand); every other term stays constant.
+    # Robot + ball pose reset is handled inside SoccerKickCommand._resample_command.
+
     # --- Fixed startup events (CPU-bucket based; not efficient for per-reset) ---
     physics_material_robot = EventTerm(
         func=mdp.randomize_rigid_body_material,
@@ -337,18 +342,15 @@ class EventCfg:
             "operation": "scale",
         },
     )
-    # Robot + ball pose reset is handled inside SoccerKickCommand._resample_command.
 
-    # --- Curriculum-controlled interval event ---
+    # --- Fixed interval event (Level-0 push, no longer ramped) ---
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
         interval_range_s=(6.0, 10.0),
         params={"velocity_range": {"x": (-0.2, 0.2), "y": (-0.2, 0.2)}},
     )
-    # --- Curriculum-controlled reset-mode events ---
-    # All start at Level 0 (mild). FallRateDomainRandCurriculum widens
-    # these as the fall rate drops.
+    # --- Fixed reset-mode events (Level-0 values, no longer ramped) ---
     trunk_mass = EventTerm(
         func=mdp.randomize_rigid_body_mass,
         mode="reset",
@@ -397,6 +399,27 @@ class EventCfg:
             "damping_distribution_params": (0.95, 1.05),
             "operation": "scale",
             "distribution": "uniform",
+        },
+    )
+
+    # --- Curriculum-controlled: the ONLY term that ramps ---
+    # Foot-sole ↔ ground friction randomization. The flat terrain uses
+    # friction_combine_mode="multiply", so randomizing the foot links' material
+    # friction directly randomizes the effective foot-ground friction.
+    # ``randomize_body_material_friction`` re-samples from the *current* cfg
+    # ranges on every reset (the built-in bucket randomizer freezes its ranges at
+    # init), so FallRateDomainRandCurriculum can widen these over training. Starts
+    # at the narrow/safe Level-0 band (~μ 1.0, terrain default) and widens to the
+    # expected K1 rubber-sole ↔ artificial-turf band (static 0.6–1.1,
+    # dynamic 0.5–0.9) at the top level.
+    foot_ground_friction = EventTerm(
+        func=mdp.soccer_events.randomize_body_material_friction,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot_link"),
+            "static_friction_range": (0.95, 1.05),
+            "dynamic_friction_range": (0.9, 1.0),
+            "restitution": 0.0,
         },
     )
 
@@ -592,10 +615,13 @@ class CurriculumCfg:
         func=mdp.soccer_curriculums.FallRateDomainRandCurriculum,
         params={
             "fall_rate_threshold": 0.15,
-            # ~100 iterations of healthy (below-threshold) fall rate to climb
-            # one level; ~20 iterations of sustained falls drop one level.
-            "consecutive_required": 100,
-            "consecutive_drop_required": 20,
+            # Promotion opportunity every ~500 iterations of healthy (below-
+            # threshold) fall rate to climb one level; demotion opportunity
+            # every ~100 iterations of sustained falls to drop one level. This
+            # ramps the foot-ground friction band gradually so the policy is
+            # never hit with the full low-friction range all at once.
+            "consecutive_required": 500,
+            "consecutive_drop_required": 100,
             "ema_alpha": 0.1,
             # 1 check per iteration: common_step_counter increments by 1 per
             # env.step(), so one iteration == num_steps_per_env (=24) steps.

@@ -40,54 +40,25 @@ class FallRateDomainRandCurriculum(ManagerTermBase):
 
     Levels
     ------
-    0  push ±0.3 m/s  (startup defaults, no extra reset-mode rand)
-    1  push ±0.5 m/s  gains scale ×[0.9,1.1]  leg mass add ±0.1~0.3 kg
-    2  push ±0.8 m/s  gains scale ×[0.85,1.15] leg mass add ±0.2~0.6 kg
-    3  push ±1.0 m/s  gains scale ×[0.8,1.2]   leg mass add ±0.3~1.0 kg
+    Only the foot-sole ↔ ground friction band ramps with this curriculum; every
+    other DR term is fixed at its Level-0 value in EventCfg. The band widens from
+    a narrow safe band toward the expected K1 rubber-sole ↔ artificial-turf band:
+
+    0  foot friction static [0.95,1.05] dynamic [0.90,1.00]  (≈ nominal μ 1.0)
+    1  foot friction static [0.85,1.08] dynamic [0.75,0.95]
+    2  foot friction static [0.70,1.10] dynamic [0.60,0.92]
+    3  foot friction static [0.60,1.10] dynamic [0.50,0.90]  (full target band)
     """
 
-    # NOTE: values halved from the original "aggressive" set as a
-    # weakened-DR isolation run (diagnosing low contact rate). push/mass/com
-    # are additive → halved directly; friction/gains are scales about 1.0 →
-    # deviation from 1.0 halved. Restore the original set once contact rate is
-    # confirmed to recover.
     LEVELS: list[dict] = [
-        # Level 0 — mild baseline (matches EventCfg initial values)
-        dict(
-            push_vel=0.2,       push_interval=(6.0, 10.0),
-            trunk_mass=(-0.075, 0.25),
-            leg_mass=(-0.05,    0.1),
-            com_xy=0.015,
-            friction=(0.9,      1.1),
-            gains=(0.95,        1.05),
-        ),
+        # Level 0 — narrow/safe band centered on the terrain nominal (μ ≈ 1.0)
+        dict(foot_static=(0.95, 1.05), foot_dynamic=(0.90, 1.00)),
         # Level 1
-        dict(
-            push_vel=0.3,       push_interval=(4.0, 8.0),
-            trunk_mass=(-0.1,   0.35),
-            leg_mass=(-0.075,   0.2),
-            com_xy=0.02,
-            friction=(0.825,    1.2),
-            gains=(0.9,         1.1),
-        ),
+        dict(foot_static=(0.85, 1.08), foot_dynamic=(0.75, 0.95)),
         # Level 2
-        dict(
-            push_vel=0.5,       push_interval=(3.0, 6.0),
-            trunk_mass=(-0.15,  0.45),
-            leg_mass=(-0.125,   0.3),
-            com_xy=0.025,
-            friction=(0.75,     1.3),
-            gains=(0.85,        1.15),
-        ),
-        # Level 3 — full randomization (still ~half of the aggressive set)
-        dict(
-            push_vel=0.75,      push_interval=(3.0, 6.0),
-            trunk_mass=(-0.2,   0.6),
-            leg_mass=(-0.175,   0.45),
-            com_xy=0.03,
-            friction=(0.7,      1.4),
-            gains=(0.8,         1.2),
-        ),
+        dict(foot_static=(0.70, 1.10), foot_dynamic=(0.60, 0.92)),
+        # Level 3 — full target friction band (recommended turf range)
+        dict(foot_static=(0.60, 1.10), foot_dynamic=(0.50, 0.90)),
     ]
 
     def __init__(self, cfg: "CurriculumTermCfg", env: "ManagerBasedRLEnv"):
@@ -165,42 +136,30 @@ class FallRateDomainRandCurriculum(ManagerTermBase):
 
         return self._level
 
+    @staticmethod
+    def _get_term_cfg(env: "ManagerBasedRLEnv", name: str):
+        """Return the event term cfg, or ``None`` if it is not registered.
+
+        Domain randomization event terms are optional: EventCfg may be emptied
+        to disable DR entirely while keeping this curriculum's level tracking.
+        Each ``_apply_level`` mutation is guarded so a missing term is skipped
+        instead of raising, and re-adding the term reconnects it automatically.
+        """
+        try:
+            return env.event_manager.get_term_cfg(name)
+        except (ValueError, KeyError):
+            return None
+
     def _apply_level(self, env: "ManagerBasedRLEnv") -> None:
         p = self.LEVELS[self._level]
 
-        # push_robot: velocity + interval
-        v = p["push_vel"]
-        push_cfg = env.event_manager.get_term_cfg("push_robot")
-        push_cfg.params["velocity_range"] = {"x": (-v, v), "y": (-v, v)}
-        push_cfg.interval_range_s = p["push_interval"]
-
-        # trunk mass
-        env.event_manager.get_term_cfg("trunk_mass").params[
-            "mass_distribution_params"
-        ] = p["trunk_mass"]
-
-        # leg mass
-        env.event_manager.get_term_cfg("randomize_leg_mass").params[
-            "mass_distribution_params"
-        ] = p["leg_mass"]
-
-        # base CoM
-        c = p["com_xy"]
-        env.event_manager.get_term_cfg("base_com").params["com_range"] = {
-            "x": (-c, c), "y": (-c, c), "z": (-c * 0.25, c * 0.25)
-        }
-
-        # joint friction
-        lo, hi = p["friction"]
-        env.event_manager.get_term_cfg("joint_friction").params[
-            "friction_distribution_params"
-        ] = (lo, hi)
-
-        # actuator gains
-        lo, hi = p["gains"]
-        gains_cfg = env.event_manager.get_term_cfg("randomize_actuator_gains")
-        gains_cfg.params["stiffness_distribution_params"] = (lo, hi)
-        gains_cfg.params["damping_distribution_params"] = (lo, hi)
+        # foot-ground friction band (re-sampled per reset from these ranges).
+        # This is the only DR term the curriculum ramps; all other DR terms are
+        # held fixed at their Level-0 values in EventCfg.
+        foot_cfg = self._get_term_cfg(env, "foot_ground_friction")
+        if foot_cfg is not None:
+            foot_cfg.params["static_friction_range"] = p["foot_static"]
+            foot_cfg.params["dynamic_friction_range"] = p["foot_dynamic"]
 
 
 def ball_distance_curriculum(
