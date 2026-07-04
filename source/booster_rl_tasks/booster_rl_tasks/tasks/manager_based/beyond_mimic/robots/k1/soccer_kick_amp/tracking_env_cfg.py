@@ -124,6 +124,8 @@ class CommandsCfg:
         # ~3.3 m/s instead of the uniform 4.5).
         target_strength_range=(1.0, 8.0),
         target_strength_sample_exponent=2.0,
+        # Shoot-only: every episode is a shoot-at-goal command (no pass mode).
+        shoot_prob=1.0,
     )
 
 
