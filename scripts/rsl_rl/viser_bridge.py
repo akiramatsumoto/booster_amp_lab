@@ -497,7 +497,7 @@ class BoosterViserBridge:
         for name, axis, radius_attr, height_attr in (
             ("goal_post_left", "Z", 0.05, 1.2),
             ("goal_post_right", "Z", 0.05, 1.2),
-            ("goal_crossbar", "Y", 0.04, 2.6),
+            ("goal_crossbar", "Y", 0.04, 2.5),
         ):
             asset_cfg = getattr(env_scene_cfg, name, None)
             if asset_cfg is None:
@@ -515,7 +515,7 @@ class BoosterViserBridge:
                 radius = radius_attr
                 height = height_attr
                 init_pos = np.array(
-                    [7.0, 1.3 if "left" in name else (-1.3 if "right" in name else 0.0),
+                    [7.0, 1.25 if "left" in name else (-1.25 if "right" in name else 0.0),
                      0.6 if "post" in name else 1.2],
                     dtype=np.float64,
                 )

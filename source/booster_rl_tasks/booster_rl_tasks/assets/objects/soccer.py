@@ -1,7 +1,7 @@
 """Soccer-specific scene assets: ball, goal posts, field dimensions.
 
 Field: 9 m (Y, width) x 14 m (X, length).
-Goal mouth: 2.6 m wide x 1.2 m tall. Two upright posts + one crossbar.
+Goal mouth: 2.5 m wide x 1.2 m tall. Two upright posts + one crossbar.
 
 The ball is a dynamic rigid sphere; the goal posts are kinematic (collidable but
 do not move). Scoring is detected analytically by the soccer command term
@@ -20,10 +20,10 @@ FIELD_WIDTH_Y = 9.0
 FIELD_HALF_LENGTH = FIELD_LENGTH_X / 2.0   # 7.0 m
 FIELD_HALF_WIDTH = FIELD_WIDTH_Y / 2.0     # 4.5 m
 
-# Goal mouth: 2.6m wide x 1.2m tall.
-GOAL_WIDTH = 2.6
+# Goal mouth: 2.5m wide x 1.2m tall.
+GOAL_WIDTH = 2.5
 GOAL_HEIGHT = 1.2
-GOAL_HALF_WIDTH = GOAL_WIDTH / 2.0  # 1.3 m
+GOAL_HALF_WIDTH = GOAL_WIDTH / 2.0  # 1.25 m
 
 # Goal line is the inside face of the goal posts at x = +FIELD_HALF_LENGTH.
 # The goal mouth straddles y = 0. Posts sit on the line.

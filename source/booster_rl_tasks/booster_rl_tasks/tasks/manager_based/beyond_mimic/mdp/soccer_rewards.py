@@ -202,7 +202,7 @@ def kick_shoot_reward(
     latch_step: int = 3,
     speed_scale: float = 3.0,
     miss_sigma: float = 0.3,
-    goal_half_width: float = 1.3,
+    goal_half_width: float | None = None,
     ball_radius: float = 0.11,
 ) -> torch.Tensor:
     """V4.4 unified one-shot shoot reward: speed × predicted-crossing accuracy.
@@ -222,6 +222,10 @@ def kick_shoot_reward(
     Shape: ``(num_envs,)`` ≥ 0. Caller supplies a positive weight.
     """
     cmd = _cmd(env, command_name)
+    # Default to the command cfg's goal geometry so a goal-width change
+    # propagates here without touching the reward params.
+    if goal_half_width is None:
+        goal_half_width = float(cmd.cfg.goal_half_width)
     # --- one-shot: fire only at latch_step of the FIRST kick this episode ---
     at_latch = cmd.steps_since_kick == int(latch_step)
     fire = (at_latch & ~cmd._shoot_reward_fired).float()
