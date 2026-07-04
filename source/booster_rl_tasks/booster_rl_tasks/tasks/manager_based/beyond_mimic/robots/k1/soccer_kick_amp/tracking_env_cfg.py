@@ -6,8 +6,8 @@ Layout:
                 + target dir (cos/sin) + target strength + mode flag.
   * Critic obs: same + base lin vel + GT ball vel/goal pos + kick latches.
   * AMP obs: shared with locomotion (joint pos/vel + hand/foot positions).
-  * Rewards: target_progress, ball_approach, kick_contact, kick_success,
-             kick_angle_error, kick_strength_error, goal_scored_reward, posture
+  * Rewards: kick_shoot (one-shot speed×accuracy), target_progress,
+             ball_approach, kick_contact, goal_scored_reward, posture
              & alignment penalties, AMP style (via AMP PPO).
   * Term: timeout, fall (z<0.3 or tilt>1.3), ball out of field, goal scored.
 """
@@ -412,9 +412,30 @@ class EventCfg:
 @configclass
 class RewardsCfg:
     # ---- Goal-related ----
+    # V4.4 unified one-shot shoot reward: speed × predicted-crossing accuracy,
+    # fired once per episode at latch_step after the first kick contact.
+    # Replaces kick_success + kick_angle_error + kick_strength_error — pure
+    # positive, so "don't kick" / "kick weakly" earn exactly zero.
+    # Reward-manager multiplies by dt (0.02 s), so weight 150 → up to 3.0
+    # return per episode for a fast on-target kick (goal_scored 250 → 5.0
+    # stays the dominant terminal signal).
+    kick_shoot = RewTerm(
+        func=mdp.soccer_rewards.kick_shoot_reward,
+        weight=150.0,
+        params={
+            "command_name": "soccer_kick",
+            "latch_step": 3,
+            "speed_scale": 3.0,
+            "miss_sigma": 0.3,
+        },
+    )
+    # Dense ball-toward-target shaping, kept at a reduced weight as the
+    # gradient that links "kick harder along the target dir" to return before
+    # the one-shot kick_shoot term ever fires. It scales with kick speed, so
+    # it cannot re-open the weak-kick loophole the error penalties created.
     target_progress = RewTerm(
         func=mdp.soccer_rewards.target_progress,
-        weight=8.0,
+        weight=2.0,
         params={"command_name": "soccer_kick"},
     )
     ball_approach = RewTerm(
@@ -432,11 +453,6 @@ class RewardsCfg:
         weight=4.0,
         params={"command_name": "soccer_kick"},
     )
-    kick_success = RewTerm(
-        func=mdp.soccer_rewards.kick_success,
-        weight=10.0,
-        params={"command_name": "soccer_kick"},
-    )
     goal_scored = RewTerm(
         func=mdp.soccer_rewards.goal_scored_reward,
         weight=250.0,
@@ -447,16 +463,6 @@ class RewardsCfg:
     near_foot_kick = RewTerm(
         func=mdp.soccer_rewards.near_foot_kick,
         weight=0.0,
-        params={"command_name": "soccer_kick"},
-    )
-    kick_angle_error = RewTerm(
-        func=mdp.soccer_rewards.kick_angle_error,
-        weight=-1.0,
-        params={"command_name": "soccer_kick"},
-    )
-    kick_strength_error = RewTerm(
-        func=mdp.soccer_rewards.kick_strength_error,
-        weight=-0.5,
         params={"command_name": "soccer_kick"},
     )
     # ---- Auxiliary / posture ----
@@ -590,21 +596,11 @@ class TerminationsCfg:
 class CurriculumCfg:
     # Ball distance is fixed at 1 m (see CommandsCfg.soccer_kick); the distance
     # curriculum is intentionally disabled.
-    # Ramp the kick angle/strength error penalties with the kick-contact return:
-    # weight = base_weight * ema(Episode_Reward/kick_contact) * gain. Penalties
-    # start near 0 and tighten only once the policy reliably makes contact.
-    kick_error_weight = CurrTerm(
-        func=mdp.soccer_curriculums.KickErrorWeightCurriculum,
-        params={
-            "gain": 1000.0,
-            "ema_alpha": 0.1,
-            "contact_term": "kick_contact",
-            "scaled_terms": ["kick_angle_error", "kick_strength_error"],
-            "max_abs_weight": None,
-        },
-    )
-    # Ramp the heavy stability/quality terms with the kick-contact return, the
-    # same way ``kick_error_weight`` ramps the direction/strength penalties.
+    # V4.4: the kick angle/strength error penalties (and their ramp-up
+    # curriculum) are gone — kick_shoot folds accuracy and speed into a single
+    # positive one-shot term that needs no gating, since it is exactly zero
+    # until a kick happens.
+    # Ramp the heavy stability/quality terms with the kick-contact return.
     # ``terminated`` (-200), ``pelvis_orientation`` (-5) and ``goal_scored``
     # (250) are far too strong for the *early* policy: the fall/tilt penalty in
     # particular makes the balance-risky kick swing net-negative in expectation,
@@ -613,8 +609,7 @@ class CurriculumCfg:
     # to its configured base value (the full strength above) and stops there —
     # so the policy can freely explore the kick motion while contact is rare,
     # and the stability/goal terms only tighten once contact is established.
-    # gain=100 reaches full strength at ema(kick_contact)≈0.01 (≈ where
-    # ``kick_error_weight`` already considers contact meaningful).
+    # gain=100 reaches full strength at ema(kick_contact)≈0.01.
     contact_gated_weight = CurrTerm(
         func=mdp.soccer_curriculums.KickErrorWeightCurriculum,
         params={

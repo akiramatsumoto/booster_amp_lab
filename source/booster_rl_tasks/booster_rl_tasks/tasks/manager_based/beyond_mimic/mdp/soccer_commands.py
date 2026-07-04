@@ -176,6 +176,10 @@ class SoccerKickCommand(CommandTerm):
         # tracks the BEST kick within the entire episode for monitoring.
         self._lifetime_peak_kick_speed = torch.zeros(N, device=d)
         self._kick_contact_pos_w = torch.zeros(N, 3, device=d)
+        # V4.4: once-per-episode latch for ``kick_shoot_reward``. Set at the
+        # reward's latch step of the FIRST kick; never cleared by multi-attempt
+        # re-arming, only on episode reset.
+        self._shoot_reward_fired = torch.zeros(N, dtype=torch.bool, device=d)
 
         # V3.2: trap-success latch (one-shot, ball settled at a receiver foot).
         self._trap_success_awarded = torch.zeros(N, dtype=torch.bool, device=d)
@@ -1081,6 +1085,7 @@ class SoccerKickCommand(CommandTerm):
         self._peak_kick_speed[env_ids_t] = 0.0
         self._lifetime_peak_kick_speed[env_ids_t] = 0.0
         self._kick_contact_pos_w[env_ids_t] = 0.0
+        self._shoot_reward_fired[env_ids_t] = False
         # V3.2: clear trap latch.
         self._trap_success_awarded[env_ids_t] = False
 

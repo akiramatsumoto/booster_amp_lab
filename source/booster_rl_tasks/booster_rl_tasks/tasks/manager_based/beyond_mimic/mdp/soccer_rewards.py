@@ -196,6 +196,53 @@ def kick_power_track_pass(
         -(err * err) / (sigma * sigma)
     )
 
+def kick_shoot_reward(
+    env: "ManagerBasedRLEnv",
+    command_name: str = "soccer_kick",
+    latch_step: int = 3,
+    speed_scale: float = 3.0,
+    miss_sigma: float = 0.3,
+    goal_half_width: float = 1.3,
+    ball_radius: float = 0.11,
+) -> torch.Tensor:
+    """V4.4 unified one-shot shoot reward: speed × predicted-crossing accuracy.
+    Design rationale (closes both V4.2/V4.3 loopholes):
+      * Single POSITIVE term — no penalty exists, so "don't kick" and
+        "kick weakly to dodge the gate" earn exactly zero, never optimal.
+      * Accuracy is the predicted goal-line crossing point, not the
+        angle to goal center: any on-target trajectory (including
+        near-post) scores accuracy = 1.0; miss decays with distance.
+      * Fired ONCE per EPISODE via ``_shoot_reward_fired`` latch —
+        ``ready_for_next`` re-arms ``steps_since_kick``, so a per-kick
+        trigger could be farmed by repeated weak on-target kicks
+        (tanh saturation makes n weak kicks beat one strong kick).
+        The episode latch removes that path entirely.
+    Requires ``self._shoot_reward_fired`` (bool, num_envs) on the command
+    term, cleared to False for env_ids on episode reset.
+    Shape: ``(num_envs,)`` ≥ 0. Caller supplies a positive weight.
+    """
+    cmd = _cmd(env, command_name)
+    # --- one-shot: fire only at latch_step of the FIRST kick this episode ---
+    at_latch = cmd.steps_since_kick == int(latch_step)
+    fire = (at_latch & ~cmd._shoot_reward_fired).float()
+    cmd._shoot_reward_fired |= at_latch
+    env_origins = env.scene.env_origins
+    goal_x = env_origins[:, 0] + float(cmd.cfg.goal_line_x)
+    ball_x = cmd.ball_pos_w[:, 0]
+    ball_y = cmd.ball_pos_w[:, 1]
+    ball_vx = cmd.ball_vel_w[:, 0]
+    ball_vy = cmd.ball_vel_w[:, 1]
+    # --- accuracy: predicted crossing point on the goal line ---
+    toward_goal = ball_vx > 0.05  # ball must actually travel goalward
+    t_cross = (goal_x - ball_x) / ball_vx.clamp_min(0.05)
+    y_cross = ball_y + ball_vy * t_cross
+    y_goal = env_origins[:, 1]  # goal mouth centered on env origin
+    miss = ((y_cross - y_goal).abs() - (float(goal_half_width) - float(ball_radius))).clamp_min(0.0)
+    accuracy = torch.exp(-(miss / float(miss_sigma)) ** 2) * toward_goal.float()
+    # --- speed: superlinear, saturating ---
+    ball_speed = torch.sqrt(ball_vx * ball_vx + ball_vy * ball_vy)
+    speed_term = torch.tanh((ball_speed / float(speed_scale)) ** 2)
+    return cmd.is_shoot.float() * fire * speed_term * accuracy
 
 def kick_angle_error_shoot(
     env: "ManagerBasedRLEnv",
