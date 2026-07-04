@@ -515,7 +515,7 @@ class BoosterViserBridge:
                 radius = radius_attr
                 height = height_attr
                 init_pos = np.array(
-                    [7.0, 1.25 if "left" in name else (-1.25 if "right" in name else 0.0),
+                    [4.5, 1.25 if "left" in name else (-1.25 if "right" in name else 0.0),
                      0.6 if "post" in name else 1.2],
                     dtype=np.float64,
                 )
@@ -534,7 +534,7 @@ class BoosterViserBridge:
         # user has a ground reference (the shadow MJCF floor is invisible).
         if self._ball_node is not None:
             import trimesh
-            field = trimesh.creation.box(extents=[14.0, 9.0, 0.005])
+            field = trimesh.creation.box(extents=[9.0, 6.0, 0.005])
             self._field_node = self._server.scene.add_mesh_trimesh(
                 "/soccer/field", _colored(field, (60, 140, 60, 180))
             )

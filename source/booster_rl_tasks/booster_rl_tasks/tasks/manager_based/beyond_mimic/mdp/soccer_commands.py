@@ -694,6 +694,12 @@ class SoccerKickCommand(CommandTerm):
         spawn_x = _uniform(*self.cfg.robot_spawn_x_range, n=n, device=d)
         spawn_y = _uniform(*self.cfg.robot_spawn_y_range, n=n, device=d)
         spawn_yaw = _uniform(*self.cfg.robot_spawn_yaw_range, n=n, device=d)
+        if self.cfg.robot_spawn_yaw_to_goal:
+            # Re-center the sampled yaw on the spawn-point→goal-center
+            # direction (env-local goal center = (goal_line_x, 0)). Only used
+            # via cos/sin/quat below, so no wrap-to-pi is needed.
+            to_goal_yaw = torch.atan2(-spawn_y, float(self.cfg.goal_line_x) - spawn_x)
+            spawn_yaw = to_goal_yaw + spawn_yaw
 
         env_origins = self._env.scene.env_origins[env_ids_t]
 
@@ -766,6 +772,18 @@ class SoccerKickCommand(CommandTerm):
         ball_pose[:, 1] = robot_pose[:, 1] + offset_y_w
         ball_pose[:, 2] = env_origins[:, 2] + self.cfg.ball_spawn_height
         ball_pose[:, 3] = 1.0
+        # Keep the spawned ball inside the field. With edge spawns and a wide
+        # spawn cone the polar offset can land outside the sidelines, which
+        # would latch ``ball_out_of_field`` on the very first step.
+        margin = 0.3
+        ball_pose[:, 0] = ball_pose[:, 0].clamp(
+            env_origins[:, 0] - (FIELD_HALF_LENGTH - margin),
+            env_origins[:, 0] + (FIELD_HALF_LENGTH - margin),
+        )
+        ball_pose[:, 1] = ball_pose[:, 1].clamp(
+            env_origins[:, 1] - (FIELD_HALF_WIDTH - margin),
+            env_origins[:, 1] + (FIELD_HALF_WIDTH - margin),
+        )
         self._ball.write_root_pose_to_sim(ball_pose, env_ids=env_ids_t)
         self._ball.write_root_velocity_to_sim(
             torch.zeros(n, 6, device=d), env_ids=env_ids_t
@@ -1540,6 +1558,11 @@ class SoccerKickCommandCfg(CommandTermCfg):
     robot_spawn_x_range: tuple[float, float] = (-FIELD_HALF_LENGTH + 1.0, FIELD_HALF_LENGTH - 4.0)
     robot_spawn_y_range: tuple[float, float] = (-FIELD_HALF_WIDTH + 1.0, FIELD_HALF_WIDTH - 1.0)
     robot_spawn_yaw_range: tuple[float, float] = (-math.pi, math.pi)
+    # When True, ``robot_spawn_yaw_range`` is interpreted RELATIVE to the
+    # direction from the spawn point to the goal center, instead of the world
+    # +x axis. E.g. a ±100° range then guarantees the goal is never fully
+    # behind the robot at episode start, regardless of the spawn position.
+    robot_spawn_yaw_to_goal: bool = False
     robot_spawn_z: float = 0.57  # matches BOOSTER_K1_CFG.init_state.pos.z
 
     # Kick target in world frame: cos/sin of direction, scalar strength (m/s).
@@ -1571,8 +1594,9 @@ class SoccerKickCommandCfg(CommandTermCfg):
     # When False, the kicker is in "pass" mode and aims at ``pass_target_pos_w``.
     shoot_prob: float = 0.5
     # Pass target xy sampled uniformly in these ranges (relative to env origin).
-    pass_target_x_range: tuple[float, float] = (-2.0, 6.0)
-    pass_target_y_range: tuple[float, float] = (-3.5, 3.5)
+    # Derived from the field constants so the target always stays in-bounds.
+    pass_target_x_range: tuple[float, float] = (-2.0, FIELD_HALF_LENGTH - 1.0)
+    pass_target_y_range: tuple[float, float] = (-FIELD_HALF_WIDTH + 0.5, FIELD_HALF_WIDTH - 0.5)
     # Landing radius (meters) around pass target xy.
     pass_landing_radius: float = 1.0
     # Only count a landing if ball XY speed is in this band — encourages

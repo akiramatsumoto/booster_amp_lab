@@ -1,6 +1,6 @@
 """Soccer-specific scene assets: ball, goal posts, field dimensions.
 
-Field: 9 m (Y, width) x 14 m (X, length).
+Field: 6 m (Y, width) x 9 m (X, length).
 Goal mouth: 2.5 m wide x 1.2 m tall. Two upright posts + one crossbar.
 
 The ball is a dynamic rigid sphere; the goal posts are kinematic (collidable but
@@ -14,11 +14,11 @@ from isaaclab.assets import AssetBaseCfg, RigidObjectCfg
 
 
 # --- Field & goal geometry --------------------------------------------------
-# Field is 14m (X, longitudinal) x 9m (Y, transverse).
-FIELD_LENGTH_X = 14.0
-FIELD_WIDTH_Y = 9.0
-FIELD_HALF_LENGTH = FIELD_LENGTH_X / 2.0   # 7.0 m
-FIELD_HALF_WIDTH = FIELD_WIDTH_Y / 2.0     # 4.5 m
+# Field is 9m (X, longitudinal) x 6m (Y, transverse).
+FIELD_LENGTH_X = 9.0
+FIELD_WIDTH_Y = 6.0
+FIELD_HALF_LENGTH = FIELD_LENGTH_X / 2.0   # 4.5 m
+FIELD_HALF_WIDTH = FIELD_WIDTH_Y / 2.0     # 3.0 m
 
 # Goal mouth: 2.5m wide x 1.2m tall.
 GOAL_WIDTH = 2.5
@@ -27,7 +27,7 @@ GOAL_HALF_WIDTH = GOAL_WIDTH / 2.0  # 1.25 m
 
 # Goal line is the inside face of the goal posts at x = +FIELD_HALF_LENGTH.
 # The goal mouth straddles y = 0. Posts sit on the line.
-GOAL_LINE_X = FIELD_HALF_LENGTH        # 7.0 m
+GOAL_LINE_X = FIELD_HALF_LENGTH        # 4.5 m
 GOAL_BACK_OFFSET = 0.6                 # how far behind the line the back goes
 GOAL_POST_RADIUS = 0.05
 GOAL_CROSSBAR_RADIUS = 0.04

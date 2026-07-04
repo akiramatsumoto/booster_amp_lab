@@ -116,6 +116,16 @@ class CommandsCfg:
         # 0.20 m proximity gate never fires even on a clean kick. Widen it so
         # ``kick_contact`` / ``stop_mode`` latch on real contacts.
         kick_foot_proximity=0.30,
+        # Own-half spawn on the 9 m × 6 m court: the robot starts anywhere in
+        # the 4.5 m × 6 m rectangle at least 4.5 m from the goal line
+        # (env-local x ∈ [-4.5, 0], y ∈ [-3, 3]; goal line at x = +4.5).
+        robot_spawn_x_range=(-4.5, 0.0),
+        robot_spawn_y_range=(-3.0, 3.0),
+        # Yaw is sampled ±100° AROUND the spawn-point→goal direction
+        # (robot_spawn_yaw_to_goal), so the episode never starts with the
+        # goal fully behind the robot.
+        robot_spawn_yaw_range=(-math.radians(100.0), math.radians(100.0)),
+        robot_spawn_yaw_to_goal=True,
         # Fixed ball spawn: 1 m in front, within a ±100° cone. Distance is no
         # longer driven by the curriculum (see CurriculumCfg).
         ball_spawn_distance_range=(1.0, 1.0),
@@ -632,8 +642,9 @@ class CurriculumCfg:
 class SoccerKickEnvCfg(ManagerBasedRLEnvCfg):
     """Base env cfg for the soccer kick AMP task."""
 
-    # 16m env_spacing > field length 14m so neighboring fields don't overlap.
-    scene: SoccerSceneCfg = SoccerSceneCfg(num_envs=4096, env_spacing=16.0)
+    # 11m env_spacing > field length 9m (+ ball-out margin 0.5m each side)
+    # so neighboring fields don't overlap.
+    scene: SoccerSceneCfg = SoccerSceneCfg(num_envs=4096, env_spacing=11.0)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
     commands: CommandsCfg = CommandsCfg()
