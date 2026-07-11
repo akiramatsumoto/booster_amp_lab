@@ -35,6 +35,7 @@ CLI flags let you regenerate a subset by category, by name, or by source kind.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import pickle
@@ -64,6 +65,15 @@ parser.add_argument(
     help="Restrict build to these categories.",
 )
 parser.add_argument("--robot", type=str, default="booster_k1", choices=["booster_k1"])
+parser.add_argument(
+    "--walk_rollout_dir",
+    type=str,
+    default=None,
+    help="If set, ignore the default specs and build ONLY 'walk_policy' clips from every "
+    "*.pkl in this dir. These are leg-only walk rollouts (from the K1-Locomotion recorder); "
+    "the head/arm DOFs are filled with the fixed standing pose. Output → <output_root>/walk_policy/.",
+)
+parser.add_argument("--walk_rollout_weight", type=float, default=0.5, help="MotionWeight for walk_policy clips.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, _ = parser.parse_known_args()
 
@@ -117,11 +127,34 @@ _PKL_TO_LAB_K1 = [
 ]
 
 
+# CSV / K1_JOINT_NAMES order = the *source* joint order that ``_PKL_TO_LAB_K1``
+# maps FROM (index i -> the joint named below). Used to place a leg-only walk
+# rollout into a full 22-DOF vector before reordering to IsaacLab BFS order.
+_CSV_JOINT_ORDER = [
+    "AAHead_yaw", "Head_pitch",
+    "ALeft_Shoulder_Pitch", "Left_Shoulder_Roll", "Left_Elbow_Pitch", "Left_Elbow_Yaw",
+    "ARight_Shoulder_Pitch", "Right_Shoulder_Roll", "Right_Elbow_Pitch", "Right_Elbow_Yaw",
+    "Left_Hip_Pitch", "Left_Hip_Roll", "Left_Hip_Yaw", "Left_Knee_Pitch", "Left_Ankle_Pitch", "Left_Ankle_Roll",
+    "Right_Hip_Pitch", "Right_Hip_Roll", "Right_Hip_Yaw", "Right_Knee_Pitch", "Right_Ankle_Pitch", "Right_Ankle_Roll",
+]
+
+# Fixed head+arm pose (rad) held during the gait: the leg-only walk policy keeps
+# the upper body at the deploy DEFAULT_ANGLES standing pose. Mirror of
+# ``soccer_commands._DEPLOY_DEFAULT_UPPER_BODY`` (kept in sync by hand).
+_FIXED_UPPER_BODY = {
+    "AAHead_yaw": 0.0, "Head_pitch": 0.0,
+    "ALeft_Shoulder_Pitch": 0.3, "Left_Shoulder_Roll": -1.374,
+    "Left_Elbow_Pitch": 0.0, "Left_Elbow_Yaw": -1.2,
+    "ARight_Shoulder_Pitch": 0.3, "Right_Shoulder_Roll": 1.374,
+    "Right_Elbow_Pitch": 0.0, "Right_Elbow_Yaw": 1.2,
+}
+
+
 @dataclass(frozen=True)
 class MotionSpec:
     name: str           # output filename stem
-    category: str       # forward | lateral | backward | pivot | kick
-    kind: str           # 'pkl' or 'legacy'
+    category: str       # forward | lateral | backward | pivot | kick | walk_policy
+    kind: str           # 'pkl' | 'legacy' | 'rollout'
     source_path: str
     motion_weight: float
     fps: float | None = None  # only used as fallback for legacy txt
@@ -234,9 +267,36 @@ class _SceneCfg(InteractiveSceneCfg):
     robot: ArticulationCfg = BOOSTER_K1_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
 
+class _Numpy2CompatUnpickler(pickle.Unpickler):
+    """Unpickler that reads numpy>=2.0 arrays under numpy<2.0.
+
+    numpy 2.0 renamed the private ``numpy.core`` package to ``numpy._core``, so
+    a pickle written by numpy>=2.0 (e.g. GMR-retargeter output) references
+    ``numpy._core.*`` and fails to load under Isaac Sim's numpy<2.0 with
+    ``ModuleNotFoundError: No module named 'numpy._core'``. Rewrite those module
+    paths back to the legacy ``numpy.core`` on the fly.
+    """
+
+    def find_class(self, module, name):
+        if module == "numpy._core" or module.startswith("numpy._core."):
+            module = "numpy.core" + module[len("numpy._core"):]
+        return super().find_class(module, name)
+
+
+def _pickle_load(path: str):
+    """``pickle.load`` that transparently handles numpy>=2.0 pickles."""
+    with open(path, "rb") as f:
+        try:
+            return pickle.load(f)
+        except ModuleNotFoundError as e:
+            if "numpy._core" not in str(e):
+                raise
+    with open(path, "rb") as f:
+        return _Numpy2CompatUnpickler(f).load()
+
+
 def _load_pkl(spec: MotionSpec) -> _MotionData:
-    with open(spec.source_path, "rb") as f:
-        d = pickle.load(f)
+    d = _pickle_load(spec.source_path)
     fps = float(d.get("fps", spec.fps if spec.fps else 30.0))
     root_pos = np.asarray(d["root_pos"], dtype=np.float64)
     root_rot_xyzw = np.asarray(d["root_rot"], dtype=np.float64)
@@ -270,6 +330,35 @@ def _load_legacy(spec: MotionSpec) -> _MotionData:
     quat_xyzw = Rotation.from_euler("XYZ", euler_xyz, degrees=False).as_quat()
     root_rot_wxyz = quat_xyzw[:, [3, 0, 1, 2]]
     fps = 1.0 / float(d["FrameDuration"])
+    return _MotionData(spec.name, fps, root_pos, root_rot_wxyz, dof_pos)
+
+
+def _load_rollout(spec: MotionSpec) -> _MotionData:
+    """Load a leg-only walk rollout pkl and expand it to 22-DOF (CSV order).
+
+    The recorder (``K1-Locomotion/scripts/rsl_rl/record_amp_rollout.py``) stores
+    only the 12 leg joints (``dof_pos`` + ``joint_names``) plus root pose. The
+    head/arm DOFs — which the walk policy holds fixed — are filled here from
+    ``_FIXED_UPPER_BODY`` so downstream reordering/EE-FK sees a full 22-DOF pose.
+    """
+    d = _pickle_load(spec.source_path)
+    fps = float(d.get("fps", spec.fps if spec.fps else 50.0))
+    root_pos = np.asarray(d["root_pos"], dtype=np.float64)
+    root_rot_xyzw = np.asarray(d["root_rot"], dtype=np.float64)
+    root_rot_wxyz = root_rot_xyzw[:, [3, 0, 1, 2]]
+    leg_pos = np.asarray(d["dof_pos"], dtype=np.float64)
+    leg_names = list(d["joint_names"])
+    n = root_pos.shape[0]
+    if leg_pos.shape[0] != n or root_rot_wxyz.shape[0] != n:
+        raise RuntimeError(f"{spec.source_path}: row count mismatch among root_pos/root_rot/dof_pos")
+    dof_pos = np.zeros((n, 22), dtype=np.float64)
+    for j, name in enumerate(_CSV_JOINT_ORDER):
+        if name in leg_names:
+            dof_pos[:, j] = leg_pos[:, leg_names.index(name)]
+        elif name in _FIXED_UPPER_BODY:
+            dof_pos[:, j] = _FIXED_UPPER_BODY[name]
+        else:
+            raise RuntimeError(f"{spec.source_path}: joint '{name}' missing from rollout and _FIXED_UPPER_BODY")
     return _MotionData(spec.name, fps, root_pos, root_rot_wxyz, dof_pos)
 
 
@@ -404,8 +493,23 @@ def _filter_specs(specs: list[MotionSpec]) -> list[MotionSpec]:
     return out
 
 
+def _rollout_specs(rollout_dir: str, weight: float) -> list[MotionSpec]:
+    """One 'walk_policy' spec per *.pkl in a walk-rollout dir (56-col output)."""
+    paths = sorted(glob.glob(os.path.join(rollout_dir, "*.pkl")))
+    if not paths:
+        raise FileNotFoundError(f"no *.pkl found in {rollout_dir}")
+    return [
+        MotionSpec(os.path.splitext(os.path.basename(p))[0], "walk_policy", "rollout", p,
+                   weight, include_root_vel=False)
+        for p in paths
+    ]
+
+
 def main() -> None:
-    specs = _filter_specs(_DEFAULT_SPECS)
+    if args_cli.walk_rollout_dir:
+        specs = _rollout_specs(args_cli.walk_rollout_dir, args_cli.walk_rollout_weight)
+    else:
+        specs = _filter_specs(_DEFAULT_SPECS)
     if not specs:
         print("[build_amp_corpus] no specs match filters; nothing to do.")
         return
@@ -434,6 +538,8 @@ def main() -> None:
                     motion = _load_pkl(spec)
                 elif spec.kind == "legacy":
                     motion = _load_legacy(spec)
+                elif spec.kind == "rollout":
+                    motion = _load_rollout(spec)
                 else:
                     raise ValueError(f"unknown kind {spec.kind}")
                 out = os.path.join(args_cli.output_root, cat, f"{spec.name}.txt")
