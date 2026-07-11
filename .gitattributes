@@ -20,3 +20,6 @@ checkpoints/walk_states.pt -filter -diff -merge -text
 # Tracked run checkpoint (logs/.../10525): shipped directly in git (not LFS) so
 # it pushes to public forks, which reject new LFS objects.
 logs/rsl_rl/soccer_kick_amp/10525/**/*.pt -filter -diff -merge -text
+# Frozen lower-body walk policy used to build the AMP walk_policy_*.txt reference.
+# Shipped directly in git (not LFS) so it pushes to public forks. (~2 MB)
+checkpoints/0524_walk.pt -filter -diff -merge -text

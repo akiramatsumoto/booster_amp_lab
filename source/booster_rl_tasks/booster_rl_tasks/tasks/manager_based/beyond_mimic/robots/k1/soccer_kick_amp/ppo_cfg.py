@@ -19,6 +19,12 @@ from booster_rl_tasks.tasks.manager_based.beyond_mimic.agents.rsl_rl_ppo_cfg imp
 
 _AMP_ROOT = os.path.join(BOOSTER_ASSETS_DIR, "motions", "K1", "motion_amp_expert")
 _KICK_FILES = sorted(glob.glob(os.path.join(_AMP_ROOT, "omni", "kick", "walk_kick*.txt")))
+# Walk style prior: rollouts of the frozen lower-body walk policy (built by
+# ``scripts/build_amp_corpus.py --walk_rollout_dir ...``). Falls back to the
+# legacy mocap ``walk.txt`` until those clips are generated.
+_WALK_FILES = sorted(glob.glob(os.path.join(_AMP_ROOT, "omni", "walk_policy", "walk_policy_*.txt"))) or [
+    os.path.join(_AMP_ROOT, "walk.txt")
+]
 
 
 @configclass
@@ -31,9 +37,7 @@ class PPORunnerCfg(BaseAMPAgentCfg):
     # root vel = 56 cols); see ``scripts/build_amp_corpus.py``.
     amp_reward_coef = 0.35
     amp_motion_files = [
-        os.path.join(_AMP_ROOT, "walk.txt"),
-        os.path.join(_AMP_ROOT, "walk2run.txt"),
-        os.path.join(_AMP_ROOT, "run.txt"),
+        *_WALK_FILES,
         *_KICK_FILES,
     ]
     amp_num_preload_transitions = 200000
