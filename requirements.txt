@@ -1,0 +1,7 @@
+# booster_amp_lab の依存を1コマンドで導入するためのファイル。
+# 使い方（Isaac Lab の python 経由でリポジトリ直下から実行）:
+#   ../isaaclab/isaaclab.sh -p -m pip install -r requirements.txt
+-e ./rsl_rl
+-e ./booster_assets
+ruamel.yaml
+-e ./source/booster_rl_tasks

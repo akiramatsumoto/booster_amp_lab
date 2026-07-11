@@ -18,16 +18,19 @@ This repository follows the standard Isaac Lab project structure, and is tested 
     git clone https://github.com/BoosterRobotics/booster_rl_tasks.git
     ```
 
-- Download and install booster_assets:
-   - Clone the [booster_assets](https://github.com/BoosterRobotics/booster_assets) which contains Booster robot models and motion data.
-   - Install booster_assets python helper following the instructions in the repository.
-
-- Using a python interpreter that has Isaac Lab installed, install the library in editable mode using:
+- Using a python interpreter that has Isaac Lab installed, install all dependencies
+  (bundled `rsl_rl`, `booster_assets`, `ruamel.yaml`, and `booster_rl_tasks`) in one command
+  from the repository root:
 
     ```bash
     # use 'PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-    python -m pip install -e source/booster_rl_tasks
+    python -m pip install -r requirements.txt
     ```
+
+  This installs the bundled `rsl_rl` and `booster_assets` in editable mode. If you instead
+  keep `booster_assets` in a separate location, clone
+  [booster_assets](https://github.com/BoosterRobotics/booster_assets) (Booster robot models and
+  motion data) and install it from there following its own instructions.
 
 - Prepare BeyondMimic motion data:
     ```bash
