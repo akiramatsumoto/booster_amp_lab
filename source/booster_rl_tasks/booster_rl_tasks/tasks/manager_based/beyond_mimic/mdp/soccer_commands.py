@@ -827,7 +827,9 @@ class SoccerKickCommand(CommandTerm):
         robot_xy_w = robot_pose[:, :2]
 
         # ----- Shoot-mode target: aim at a point on the goal line --------
-        goal_margin = float(self.cfg.goal_half_width) * 0.8
+        # ``shoot_goal_aim_spread`` = 0 → always aim at the goal center, so the
+        # commanded direction is straight at the goal (no lateral spread).
+        goal_margin = float(self.cfg.goal_half_width) * float(self.cfg.shoot_goal_aim_spread)
         goal_y = _uniform(-goal_margin, goal_margin, n=n, device=d)
         # World xy of the goal aim-point (env-origin-relative on x).
         shoot_goal_x_w = env_origins[:, 0] + float(self.cfg.goal_line_x)
@@ -1588,6 +1590,11 @@ class SoccerKickCommandCfg(CommandTermCfg):
     # Goal definition (used for shoot-mode scoring).
     goal_line_x: float = GOAL_LINE_X
     goal_half_width: float = GOAL_HALF_WIDTH
+    # Shoot-mode aim spread: the goal aim-point y is sampled uniformly in
+    # ±(goal_half_width * shoot_goal_aim_spread). Set to 0.0 to always aim at the
+    # goal center → the commanded kick direction is "straight at the goal" with
+    # no lateral spread (used by the straight-shot drill).
+    shoot_goal_aim_spread: float = 0.8
 
     # V2: shoot vs pass mode -----------------------------------------------
     # Per-episode probability the kicker is in "shoot" mode (aim at goal).

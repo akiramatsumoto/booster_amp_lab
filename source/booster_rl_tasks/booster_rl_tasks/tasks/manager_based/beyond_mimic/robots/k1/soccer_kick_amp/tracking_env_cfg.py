@@ -121,15 +121,17 @@ class CommandsCfg:
         # (env-local x ∈ [-4.5, 0], y ∈ [-3, 3]; goal line at x = +4.5).
         robot_spawn_x_range=(-4.5, 0.0),
         robot_spawn_y_range=(-3.0, 3.0),
-        # Yaw is sampled ±100° AROUND the spawn-point→goal direction
-        # (robot_spawn_yaw_to_goal), so the episode never starts with the
-        # goal fully behind the robot.
-        robot_spawn_yaw_range=(-math.radians(100.0), math.radians(100.0)),
+        # Straight-shot drill: the robot faces the goal center exactly
+        # (yaw range 0 relative to the spawn-point→goal-center direction), so
+        # "straight ahead" always points into the goal.
+        robot_spawn_yaw_range=(0.0, 0.0),
         robot_spawn_yaw_to_goal=True,
-        # Fixed ball spawn: 1 m in front, within a ±100° cone. Distance is no
-        # longer driven by the curriculum (see CurriculumCfg).
-        ball_spawn_distance_range=(1.0, 1.0),
-        ball_spawn_angle_range=(-math.radians(100.0), math.radians(100.0)),
+        # Fixed ball spawn: 0.5 m in front, within a ±60° cone.
+        ball_spawn_distance_range=(0.5, 0.5),
+        ball_spawn_angle_range=(-math.radians(60.0), math.radians(60.0)),
+        # Aim at the goal center (no lateral spread) → the kick-direction
+        # command is straight at the goal, and a straight kick scores.
+        shoot_goal_aim_spread=0.0,
         # Kick strength 1-8 m/s, oversampling the weak end (exponent 2 → mean
         # ~3.3 m/s instead of the uniform 4.5).
         target_strength_range=(1.0, 8.0),
