@@ -51,6 +51,20 @@ parser.add_argument(
     help="Override base_velocity command every step during play.",
 )
 parser.add_argument("--disable_push", action="store_true", default=False, help="Disable interval push events for play.")
+# walk→kick transition: reset into sampled mid-walk states (soccer kick task)
+parser.add_argument(
+    "--walk_init",
+    type=str,
+    default=None,
+    help="Path to a .pt walk-state dataset. When set, the soccer kick task resets a "
+    "fraction of envs into a sampled mid-walk pose/velocity (mirrors train.py --walk_init).",
+)
+parser.add_argument(
+    "--walk_init_prob",
+    type=float,
+    default=1.0,
+    help="Per-env probability of using a walk-init state vs the default standing pose.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -179,6 +193,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
     if args_cli.disable_push and hasattr(env_cfg, "events") and hasattr(env_cfg.events, "push_robot"):
         env_cfg.events.push_robot = None
+
+    # Optionally reset into sampled mid-walk states (soccer kick task) — mirrors
+    # train.py so play/eval can start episodes mid-gait instead of standing.
+    if args_cli.walk_init is not None:
+        commands_cfg = getattr(env_cfg, "commands", None)
+        soccer_cmd = getattr(commands_cfg, "soccer_kick", None) if commands_cfg is not None else None
+        if soccer_cmd is not None and hasattr(soccer_cmd, "init_state_dataset_path"):
+            soccer_cmd.init_state_dataset_path = args_cli.walk_init
+            soccer_cmd.init_state_prob = args_cli.walk_init_prob
+            print(f"[play] walk-init: dataset={args_cli.walk_init} prob={args_cli.walk_init_prob}")
+        else:
+            print("[WARN] --walk_init set but task has no 'soccer_kick' command with init_state_dataset_path; ignoring.")
 
     # enable command-term debug markers during play / recording (target / goal /
     # pass arrows + post-kick stop-mode sphere). They default to ``debug_vis=False``
