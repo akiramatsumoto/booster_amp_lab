@@ -47,7 +47,7 @@ SOCCER_BALL_CFG = RigidObjectCfg(
             angular_damping=0.10,
             max_linear_velocity=50.0,
             max_angular_velocity=200.0,
-            max_depenetration_velocity=1.0,
+            max_depenetration_velocity=100.0,
         ),
         mass_props=sim_utils.MassPropertiesCfg(mass=SOCCER_BALL_MASS),
         collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
