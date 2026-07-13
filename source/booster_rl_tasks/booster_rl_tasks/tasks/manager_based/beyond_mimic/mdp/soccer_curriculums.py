@@ -8,6 +8,7 @@ and only read :attr:`ManagerBasedRLEnv.common_step_counter` as progress.
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -321,3 +322,187 @@ class KickErrorWeightCurriculum(ManagerTermBase):
                 w = max(-cap, min(cap, w))
             rm.get_term_cfg(n).weight = w
         return self._ema
+
+
+def _lerp_range(
+    start: tuple[float, float], final: tuple[float, float], f: float
+) -> tuple[float, float]:
+    """Interpolate a ``(lo, hi)`` range at fraction ``f`` in [0, 1]."""
+    return (
+        start[0] + (final[0] - start[0]) * f,
+        start[1] + (final[1] - start[1]) * f,
+    )
+
+
+class StagedKickCurriculum(ManagerTermBase):
+    """Goal-rate-gated staged widening of the stand-kick task.
+
+    The task is grown along two axes, one after the other, in small increments
+    that are each held until the policy has *earned* them. Difficulty only ever
+    moves forward when an EMA of the ``goal_scored_done`` termination rate has
+    stayed at/above ``goal_rate_threshold`` for ``consecutive_required``
+    consecutive checks; while the rate is below it, the level is frozen and the
+    policy keeps training at the current difficulty.
+
+    Levels
+    ------
+    ``0``
+        Stage 0 — the easiest drill. Whatever the command cfg already specifies
+        at construction time (the near/central spawn and the narrow ball cone
+        set in the env cfg) is captured as the *start* of both ramps, so this
+        term never duplicates those numbers.
+    ``1 .. cone_steps``
+        Stage 1 — the ball cone widens toward ``ball_spawn_distance_final`` /
+        ``ball_spawn_angle_final``. The robot spawn stays at the stage-0 point,
+        so the generous scoring tolerance of the near/central position is still
+        in force while the policy discovers the sideways-kick motions the wider
+        cone demands.
+    ``cone_steps+1 .. cone_steps+spawn_steps``
+        Stage 2 — the ball cone is now at full width and the robot spawn region
+        grows toward ``robot_spawn_x_final`` / ``robot_spawn_y_final``, which
+        tightens the aiming tolerance on every motion learned in stage 1.
+
+    The ordering is deliberate: widening the cone adds *new motor skills*, while
+    moving the spawn back only *grades the same kick more harshly* (the robot
+    always faces the goal center, so its body-frame task is unchanged). Skills
+    are cheaper to discover under a forgiving grade, so the cone goes first.
+
+    Because expansion is gated rather than scheduled, the curriculum is
+    self-limiting: at a difficulty the policy cannot hold ``goal_rate_threshold``
+    on, it simply stops advancing instead of degrading the policy. Levels never
+    drop — a level that has been earned is kept.
+
+    The ranges are written into the live :class:`SoccerKickCommandCfg`, which
+    ``_resample_command`` re-reads on every episode reset, so a level change
+    takes effect on the next reset rather than mid-episode.
+    """
+
+    def __init__(self, cfg: "CurriculumTermCfg", env: "ManagerBasedRLEnv"):
+        super().__init__(cfg, env)
+        p = cfg.params
+        self.command_name: str = p.get("command_name", "soccer_kick")
+        self.termination_name: str = p.get("termination_name", "goal_scored_done")
+        self.threshold: float = p.get("goal_rate_threshold", 0.85)
+        self.consecutive_required: int = int(p.get("consecutive_required", 50))
+        self.alpha: float = p.get("ema_alpha", 0.02)
+        # ~1 iteration: common_step_counter increments once per env.step(), so
+        # one iteration == num_steps_per_env (=24) steps.
+        self.check_interval: int = int(p.get("check_interval_steps", 24))
+        self.cone_steps: int = int(p.get("cone_steps", 8))
+        self.spawn_steps: int = int(p.get("spawn_steps", 8))
+
+        # Stage-0 values are read off the command cfg rather than restated here,
+        # so the env cfg stays the single source of truth for where the drill
+        # starts and the two can never drift apart. Captured on the first call,
+        # not here, so this term does not depend on the manager construction
+        # order (and sees any post-construction edit to the cfg).
+        self._start: dict[str, tuple[float, float]] | None = None
+
+        self._dist_final = tuple(p.get("ball_spawn_distance_final", (0.3, 0.7)))
+        self._angle_final = tuple(
+            p.get("ball_spawn_angle_final", (-math.pi / 2.0, math.pi / 2.0))
+        )
+        self._x_final = tuple(p.get("robot_spawn_x_final", (0.0, 3.0)))
+        self._y_final = tuple(p.get("robot_spawn_y_final", (-3.0, 3.0)))
+
+        self._level: int = 0
+        self._consecutive: int = 0
+        self._ema_goal_rate: float = 0.0
+        self._last_check_step: int = -1
+
+    @property
+    def max_level(self) -> int:
+        return self.cone_steps + self.spawn_steps
+
+    def __call__(
+        self,
+        env: "ManagerBasedRLEnv",
+        env_ids: Sequence[int],
+        command_name: str = "soccer_kick",
+        termination_name: str = "goal_scored_done",
+        goal_rate_threshold: float = 0.85,
+        consecutive_required: int = 50,
+        ema_alpha: float = 0.02,
+        check_interval_steps: int = 24,
+        cone_steps: int = 8,
+        spawn_steps: int = 8,
+        ball_spawn_distance_final: tuple[float, float] = (0.3, 0.7),
+        ball_spawn_angle_final: tuple[float, float] = (-math.pi / 2.0, math.pi / 2.0),
+        robot_spawn_x_final: tuple[float, float] = (0.0, 3.0),
+        robot_spawn_y_final: tuple[float, float] = (-3.0, 3.0),
+    ) -> int:
+        if self._start is None:
+            cmd_cfg = env.command_manager.get_term(self.command_name).cfg
+            self._start = {
+                "dist": tuple(cmd_cfg.ball_spawn_distance_range),
+                "angle": tuple(cmd_cfg.ball_spawn_angle_range),
+                "x": tuple(cmd_cfg.robot_spawn_x_range),
+                "y": tuple(cmd_cfg.robot_spawn_y_range),
+            }
+
+        # --- 1. Fold this batch of finished episodes into the goal-rate EMA ---
+        # ``env_ids`` are the envs resetting this step, so the batch mean is the
+        # fraction of just-ended episodes that ended by scoring.
+        scored = env.termination_manager.get_term(self.termination_name)[env_ids]
+        if scored.numel() > 0:
+            batch_goal_rate = scored.float().mean().item()
+            self._ema_goal_rate = (
+                self.alpha * batch_goal_rate
+                + (1.0 - self.alpha) * self._ema_goal_rate
+            )
+
+        # --- 2. Only evaluate at iteration boundaries ---
+        step = int(env.common_step_counter)
+        if step - self._last_check_step < self.check_interval:
+            return self._level
+        self._last_check_step = step
+
+        if self._level >= self.max_level:
+            return self._level
+
+        # --- 3. A check below the bar breaks the streak: no expansion while the
+        #        policy is under-performing at the difficulty it already has. ---
+        if self._ema_goal_rate >= self.threshold:
+            self._consecutive += 1
+        else:
+            self._consecutive = 0
+            return self._level
+
+        # --- 4. Sustained success -> take one increment ---
+        if self._consecutive >= self.consecutive_required:
+            self._level += 1
+            # The streak must be re-earned at the new difficulty. This doubles as
+            # the dwell that lets the EMA — still carrying the easier level's
+            # score — wash out before the next increment can trigger.
+            self._consecutive = 0
+            self._apply_level(env)
+            stage = "cone" if self._level <= self.cone_steps else "spawn"
+            print(
+                f"[StagedKickCurriculum] level ↑ {self._level}/{self.max_level}"
+                f" ({stage})  (ema_goal_rate={self._ema_goal_rate:.3f})"
+            )
+
+        return self._level
+
+    def _apply_level(self, env: "ManagerBasedRLEnv") -> None:
+        assert self._start is not None  # set on the first __call__, before this
+        cmd_cfg = env.command_manager.get_term(self.command_name).cfg
+
+        # Stage 1 consumes levels 1..cone_steps, then saturates.
+        cone_f = min(self._level, self.cone_steps) / max(self.cone_steps, 1)
+        cmd_cfg.ball_spawn_distance_range = _lerp_range(
+            self._start["dist"], self._dist_final, cone_f
+        )
+        cmd_cfg.ball_spawn_angle_range = _lerp_range(
+            self._start["angle"], self._angle_final, cone_f
+        )
+
+        # Stage 2 only starts once the cone ramp is done, so it stays at 0 for
+        # every level in stage 1.
+        spawn_f = max(self._level - self.cone_steps, 0) / max(self.spawn_steps, 1)
+        cmd_cfg.robot_spawn_x_range = _lerp_range(
+            self._start["x"], self._x_final, spawn_f
+        )
+        cmd_cfg.robot_spawn_y_range = _lerp_range(
+            self._start["y"], self._y_final, spawn_f
+        )
