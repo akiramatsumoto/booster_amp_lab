@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 
+from isaaclab.assets import ArticulationCfg
 from isaaclab.utils import configclass
 
 from booster_rl_tasks.tasks.manager_based.beyond_mimic.robots.k1.soccer_kick_amp.env_cfg import (
@@ -34,3 +35,20 @@ class FlatStandKickEnvCfg(FlatSoccerKickEnvCfg):
         # line) so the ball placed 0.3-0.4 m ahead stays clear of the goal mouth
         # and there is still a meaningful shooting distance for the standing kick.
         cmd.robot_spawn_x_range = (0.0, 3.0)
+
+        # Start from the crouched walking initial posture (matches the K1
+        # locomotion rough_env_cfg init_state): bent hips/knees/ankles with the
+        # arms/head left at their USD defaults. Overrides the parent robot cfg's
+        # arms-down-only init_state.
+        self.scene.robot.init_state = ArticulationCfg.InitialStateCfg(
+            pos=(0.0, 0.0, 0.6),
+            joint_pos={
+                ".*_Hip_Pitch": -0.26,
+                ".*_Hip_Roll": 0.0,
+                ".*_Hip_Yaw": 0.0,
+                ".*_Knee_Pitch": 0.52,
+                ".*_Ankle_Pitch": -0.26,
+                ".*_Ankle_Roll": 0.0,
+            },
+            joint_vel={".*": 0.0},
+        )
