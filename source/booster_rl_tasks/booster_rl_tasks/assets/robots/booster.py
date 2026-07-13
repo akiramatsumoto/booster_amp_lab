@@ -163,18 +163,49 @@ BOOSTER_K1_CFG = ArticulationCfg(
     },
 )
 
-K1_ACTION_SCALE = {}
-for a in BOOSTER_K1_CFG.actuators.values():
-    e = a.effort_limit if a.effort_limit is not None else a.effort_limit_sim
-    s = a.stiffness
-    names = a.joint_names_expr
-    if not isinstance(e, dict):
-        e = {n: e for n in names}
-    if not isinstance(s, dict):
-        s = {n: s for n in names}
-    for n in names:
-        if n in e and n in s and s[n]:
-            K1_ACTION_SCALE[n] = 0.25 * e[n] / s[n]
+def _action_scale(actuators) -> dict:
+    scale = {}
+    for a in actuators.values():
+        e = a.effort_limit if a.effort_limit is not None else a.effort_limit_sim
+        s = a.stiffness
+        names = a.joint_names_expr
+        if not isinstance(e, dict):
+            e = {n: e for n in names}
+        if not isinstance(s, dict):
+            s = {n: s for n in names}
+        for n in names:
+            if n in e and n in s and s[n]:
+                scale[n] = 0.25 * e[n] / s[n]
+    return scale
+
+
+K1_ACTION_SCALE = _action_scale(BOOSTER_K1_CFG.actuators)
+
+
+# ---------------------------------------------------------------------------
+# 14-DOF K1: the 8 arm joints are welded in the URDF at the deploy DEFAULT_ANGLES
+# upper-body pose (shoulder_pitch 0.3, shoulder_roll -+1.374, elbow_pitch 0,
+# elbow_yaw -+1.2 — see ``soccer_commands._DEPLOY_DEFAULT_UPPER_BODY``). Head and
+# legs stay revolute, so the policy still drives 12 legs + 2 head joints.
+#
+# The arm links keep their mass/inertia; they simply have no DOF. Both the
+# ``arms`` actuator group and the ``*_Shoulder_Roll`` init_state entries must go:
+# their regexes would match no joint on this articulation and Isaac Lab's name
+# resolution raises on an unmatched pattern.
+# ---------------------------------------------------------------------------
+BOOSTER_K1_FIXED_ARMS_CFG = BOOSTER_K1_CFG.replace(
+    spawn=BOOSTER_K1_CFG.spawn.replace(
+        asset_path=f"{BOOSTER_ASSETS_DIR}/robots/K1/K1_14dof_fixed_arms.urdf",
+    ),
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.57),
+        joint_pos={".*": 0.0},
+        joint_vel={".*": 0.0},
+    ),
+    actuators={k: v for k, v in BOOSTER_K1_CFG.actuators.items() if k != "arms"},
+)
+
+K1_FIXED_ARMS_ACTION_SCALE = _action_scale(BOOSTER_K1_FIXED_ARMS_CFG.actuators)
 
 # print(f'{BOOSTER_K1_CFG.actuators=}')
 # print(f'{K1_ACTION_SCALE=}')
