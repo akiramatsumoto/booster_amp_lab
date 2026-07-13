@@ -1,4 +1,4 @@
-"""Replay *no-root* AMP clips (56-col joint+EE format) in place.
+"""Replay *no-root* AMP clips in place.
 
 The AMP training corpus under ``motion_amp_expert/omni/**`` (e.g. the
 ``omni/kick/walk_kick*.txt`` kick priors) stores only discriminator features:
@@ -13,6 +13,17 @@ first 6 columns). This script instead pins the root at a fixed pose and streams
 the joint angles, so you can inspect the kick / gait *pose and style* on the
 spot (the robot will not translate — the walk/approach is not stored).
 
+``--leg_only`` handles the 30-col leg-only corpus produced by
+``scripts/make_leg_amp_corpus.py`` for the welded-arm K1:
+
+    [0:12]  leg joint positions   (LEG_JOINT_NAMES order)
+    [12:24] leg joint velocities  (LEG_JOINT_NAMES order)
+    [24:30] foot positions (L-foot, R-foot; root frame) -- shown only via pose
+
+In that mode the 12 leg columns are written by *name* to the robot's leg joints,
+so it pairs with ``--robot booster_k1_fixed_arms`` (the 14-DOF welded-arm robot):
+the arms hold their welded deploy pose, the head sits at 0, and the legs kick.
+
 .. code-block:: bash
 
     # Single clip
@@ -21,6 +32,10 @@ spot (the robot will not translate — the walk/approach is not stored).
 
     # All kick clips in sequence (default pattern)
     python scripts/replay_amp_noroot.py --loop
+
+    # Welded-arm robot + 30-col leg-only kick corpus (this change)
+    python scripts/replay_amp_noroot.py --loop --fps 30 \
+        --robot booster_k1_fixed_arms --leg_only
 
     # Slow-motion, custom root height
     python scripts/replay_amp_noroot.py --fps 15 --root_height 0.6
@@ -46,8 +61,15 @@ parser.add_argument(
 parser.add_argument(
     "--pattern",
     type=str,
-    default="booster_assets/motions/K1/motion_amp_expert/omni/kick/walk_kick*.txt",
-    help="Glob of clips to play in sequence when --motion is not given.",
+    default=None,
+    help="Glob of clips to play in sequence when --motion is not given. Defaults "
+    "to the 56-col kick corpus, or the 30-col leg-only corpus under --leg_only.",
+)
+parser.add_argument(
+    "--leg_only",
+    action="store_true",
+    help="Read 30-col leg-only clips (12 leg pos + 12 leg vel + 6 foot pos) and "
+    "write the 12 leg columns by name. Pair with --robot booster_k1_fixed_arms.",
 )
 parser.add_argument("--fps", type=float, default=30.0, help="Playback frames per second.")
 parser.add_argument(
@@ -56,7 +78,7 @@ parser.add_argument(
 parser.add_argument("--loop", action="store_true", help="Loop the playlist forever.")
 parser.add_argument(
     "--robot",
-    choices=["booster_t1", "booster_k1"],
+    choices=["booster_t1", "booster_k1", "booster_k1_fixed_arms"],
     default="booster_k1",
     help="Which robot to visualize.",
 )
@@ -85,7 +107,14 @@ from isaaclab.sim import SimulationContext
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
-from booster_rl_tasks.assets.robots.booster import BOOSTER_K1_CFG, BOOSTER_T1_CFG
+from booster_rl_tasks.assets.robots.booster import (
+    BOOSTER_K1_CFG,
+    BOOSTER_K1_FIXED_ARMS_CFG,
+    BOOSTER_T1_CFG,
+)
+from booster_rl_tasks.tasks.manager_based.beyond_mimic.robots.k1.soccer_stand_kick_amp.env_cfg import (
+    LEG_JOINT_NAMES,
+)
 
 
 @configclass
@@ -102,10 +131,12 @@ class ReplayMotionsSceneCfg(InteractiveSceneCfg):
     )
     if args_cli.robot == "booster_k1":
         robot: ArticulationCfg = BOOSTER_K1_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    elif args_cli.robot == "booster_k1_fixed_arms":
+        robot: ArticulationCfg = BOOSTER_K1_FIXED_ARMS_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
     elif args_cli.robot == "booster_t1":
         robot: ArticulationCfg = BOOSTER_T1_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
     else:
-        raise ValueError("--robot must be booster_t1 or booster_k1.")
+        raise ValueError("--robot must be booster_t1, booster_k1 or booster_k1_fixed_arms.")
 
 
 def _load_frames(path: str) -> np.ndarray:
@@ -142,24 +173,44 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene, clips: list[s
     n_joints = robot.num_joints
     device = scene.device
 
+    # Leg-only mode: resolve the 12 leg columns to robot joint indices by name so
+    # the mapping is correct regardless of the articulation's own joint sort. The
+    # non-leg joints (welded arms have none; the head) keep their default pose.
+    leg_ids = None
+    if args_cli.leg_only:
+        leg_ids, resolved = robot.find_joints(LEG_JOINT_NAMES, preserve_order=True)
+        if len(resolved) != len(LEG_JOINT_NAMES):
+            raise RuntimeError(
+                f"--leg_only expected {len(LEG_JOINT_NAMES)} leg joints on the robot, "
+                f"resolved {len(resolved)}: {resolved}"
+            )
+        leg_ids = torch.tensor(leg_ids, device=device)
+
     # Fixed root: origin, upright, at the requested pelvis height.
     root_state = torch.zeros((scene.num_envs, 13), device=device)
     root_state[:, 2] = float(args_cli.root_height)
     root_state[:, 3] = 1.0  # qw = 1 (identity)
 
-    dof_pos = torch.zeros((scene.num_envs, n_joints), device=device)
+    # Seed with the robot's default pose so unwritten joints (head/arms) hold it.
+    dof_pos = robot.data.default_joint_pos.clone()
     dof_vel = torch.zeros((scene.num_envs, n_joints), device=device)
     frame_dt = 1.0 / float(args_cli.fps)
+
+    n_leg = len(LEG_JOINT_NAMES)  # 12
+    # Columns needed per clip: 30 for leg-only, 2*n_joints for the full-body clips.
+    min_cols = 2 * n_leg if args_cli.leg_only else 2 * n_joints
 
     # Pre-load every clip once.
     loaded = []
     for path in clips:
         frames = _load_frames(path)
         c = frames.shape[1]
-        if c < 2 * n_joints:
-            print(f"[SKIP] {path}: {c} cols < {2 * n_joints} needed for {n_joints} joints.")
+        if c < min_cols:
+            print(f"[SKIP] {path}: {c} cols < {min_cols} needed.")
             continue
-        if c != 56:
+        if args_cli.leg_only and c != 30:
+            print(f"[WARN] {path}: {c} cols (expected 30). Reading first {2 * n_leg} as leg pos/vel.")
+        elif not args_cli.leg_only and c != 56:
             print(f"[WARN] {path}: {c} cols (expected 56). Reading first {2 * n_joints} as joint pos/vel.")
         loaded.append((os.path.basename(path), torch.from_numpy(frames).to(device)))
     if not loaded:
@@ -172,13 +223,18 @@ def run_simulator(sim: SimulationContext, scene: InteractiveScene, clips: list[s
                 if not simulation_app.is_running():
                     break
                 wall = time.time()
-                jp = frames[t, 0:n_joints]
-                jv = frames[t, n_joints:2 * n_joints]
-                if args_cli.reorder:
-                    jp = _reorder_motion_to_sim(jp)
-                    jv = _reorder_motion_to_sim(jv)
-                dof_pos[:] = jp
-                dof_vel[:] = jv
+                if args_cli.leg_only:
+                    # 12 leg pos + 12 leg vel; feet[24:30] ignored (EE, not joints).
+                    dof_pos[:, leg_ids] = frames[t, 0:n_leg]
+                    dof_vel[:, leg_ids] = frames[t, n_leg:2 * n_leg]
+                else:
+                    jp = frames[t, 0:n_joints]
+                    jv = frames[t, n_joints:2 * n_joints]
+                    if args_cli.reorder:
+                        jp = _reorder_motion_to_sim(jp)
+                        jv = _reorder_motion_to_sim(jv)
+                    dof_pos[:] = jp
+                    dof_vel[:] = jv
 
                 robot.write_joint_position_to_sim(dof_pos)
                 robot.write_joint_velocity_to_sim(dof_vel)
@@ -205,9 +261,16 @@ def main():
         if not os.path.isfile(clips[0]):
             raise FileNotFoundError(clips[0])
     else:
-        clips = sorted(glob.glob(args_cli.pattern))
+        pattern = args_cli.pattern
+        if pattern is None:
+            pattern = (
+                "booster_assets/motions/K1/motion_amp_expert/omni_legs/kick/stand_kick*.txt"
+                if args_cli.leg_only
+                else "booster_assets/motions/K1/motion_amp_expert/omni/kick/walk_kick*.txt"
+            )
+        clips = sorted(glob.glob(pattern))
         if not clips:
-            raise FileNotFoundError(f"No files match pattern: {args_cli.pattern}")
+            raise FileNotFoundError(f"No files match pattern: {pattern}")
 
     sim_cfg = sim_utils.SimulationCfg(device=args_cli.device)
     sim_cfg.dt = 1.0 / float(args_cli.fps)
