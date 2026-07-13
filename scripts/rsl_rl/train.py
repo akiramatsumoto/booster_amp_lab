@@ -276,6 +276,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     _install_debug_signal_handlers()
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+    # The Isaac Sim container ships cuDNN 9.2, which this torch build's RNN
+    # kernels reject (CUDNN_STATUS_NOT_INITIALIZED the moment a GRU/LSTM's
+    # weights are flattened onto the GPU). Fall back to the native RNN path for
+    # recurrent policies; feed-forward runs keep cuDNN.
+    if "Recurrent" in getattr(agent_cfg.policy, "class_name", ""):
+        torch.backends.cudnn.enabled = False
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations

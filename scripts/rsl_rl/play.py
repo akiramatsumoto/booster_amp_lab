@@ -179,6 +179,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
+    # See the matching note in ``train.py``: the container's cuDNN 9.2 cannot run
+    # this torch build's RNN kernels, so recurrent policies use the native path.
+    if "Recurrent" in getattr(agent_cfg.policy, "class_name", ""):
+        torch.backends.cudnn.enabled = False
 
     # when recording, track the robot so it stays in frame regardless of its world position
     if args_cli.video:

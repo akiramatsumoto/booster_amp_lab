@@ -40,6 +40,7 @@ class ActorCriticRecurrent(ActorCritic):
         rnn_hidden_dim=256,
         rnn_num_layers=1,
         init_noise_std=1.0,
+        noise_std_type: str = "scalar",
         **kwargs,
     ):
         if "rnn_hidden_size" in kwargs:
@@ -63,6 +64,7 @@ class ActorCriticRecurrent(ActorCritic):
             critic_hidden_dims=critic_hidden_dims,
             activation=activation,
             init_noise_std=init_noise_std,
+            noise_std_type=noise_std_type,
         )
 
         activation = resolve_nn_activation(activation)

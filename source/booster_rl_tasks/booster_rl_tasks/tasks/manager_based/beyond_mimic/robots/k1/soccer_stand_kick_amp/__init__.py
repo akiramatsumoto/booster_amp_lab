@@ -26,3 +26,15 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{__name__}.ppo_cfg:PPORunnerCfg",
     },
 )
+
+# Same env, GRU actor/critic instead of the MLP. Registered separately so the
+# MLP baseline above stays runnable for comparison.
+gym.register(
+    id="Booster-Soccer-StandKick-AMP-GRU-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.env_cfg:FlatStandKickEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{__name__}.ppo_cfg:GRUPPORunnerCfg",
+    },
+)
