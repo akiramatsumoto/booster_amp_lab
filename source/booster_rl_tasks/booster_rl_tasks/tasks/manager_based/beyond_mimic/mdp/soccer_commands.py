@@ -1324,26 +1324,12 @@ class SoccerKickCommand(CommandTerm):
             )
 
         # ----- Goal-scored detection ------------------------------------
-        # Requires the ball to have been KICKED at some point this episode.
-        # Geometry alone is not enough: the stand-kick drill spawns the robot
-        # 1.1-1.2 m from the goal line, and the ball is a 0.43 kg sphere with
-        # linear_damping 0.05, so a sub-threshold nudge (below
-        # ``kick_ball_speed_thresh``, hence never latching ``kick_contact``)
-        # rolls many metres and trickles in. That scored ~4x more often than
-        # ``kick_success`` and rewarded shuffling into the ball instead of
-        # kicking it. ``_episode_kick_contact_awarded`` is the episode-lifetime
-        # latch, so multi-attempt re-arming cannot clear the credit.
         bx_local = self._ball_pos_w[:, 0] - env_origins[:, 0]
         by_local = self._ball_pos_w[:, 1] - env_origins[:, 1]
         in_goal = (bx_local > self.cfg.goal_line_x) & (
             torch.abs(by_local) < self.cfg.goal_half_width
         )
-        new_goal = (
-            in_goal
-            & ~self._goal_awarded
-            & self._is_shoot
-            & self._episode_kick_contact_awarded
-        )
+        new_goal = in_goal & ~self._goal_awarded & self._is_shoot
         self._goal_awarded = self._goal_awarded | new_goal
 
         # ----- Pass-target body-frame quantities (privileged) -----------
