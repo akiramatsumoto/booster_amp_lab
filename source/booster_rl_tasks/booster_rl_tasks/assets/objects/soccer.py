@@ -56,7 +56,7 @@ SOCCER_BALL_CFG = RigidObjectCfg(
             restitution_combine_mode="max",
             static_friction=0.8,
             dynamic_friction=0.6,
-            restitution=0.35,
+            restitution=0.85,
         ),
         visual_material=sim_utils.PreviewSurfaceCfg(
             diffuse_color=(0.95, 0.95, 0.95),
