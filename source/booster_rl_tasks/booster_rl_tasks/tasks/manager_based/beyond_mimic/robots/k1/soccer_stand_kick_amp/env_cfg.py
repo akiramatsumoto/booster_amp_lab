@@ -19,9 +19,11 @@ from __future__ import annotations
 import math
 
 from isaaclab.assets import ArticulationCfg
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
+import booster_rl_tasks.tasks.manager_based.beyond_mimic.mdp as mdp
 from booster_rl_tasks.assets.robots.booster import (
     BOOSTER_K1_FIXED_ARMS_CFG as ROBOT_CFG,
     K1_FIXED_ARMS_ACTION_SCALE,
@@ -52,16 +54,55 @@ class FlatStandKickEnvCfg(FlatSoccerKickEnvCfg):
     def __post_init__(self):
         super().__post_init__()
 
-        # --- Ball spawn: within standing-kick reach, no approach step needed ---
+        # --- Stage 0 of the curriculum: the easiest drill the task supports ---
+        # These four ranges are the *start* of the two ramps that
+        # ``StagedKickCurriculum`` drives (it reads them off this cfg, so they
+        # are stated only here). The robot is pinned to the near/central spot in
+        # the opponent half — env-local (3, 0), i.e. 1.5 m from the goal line at
+        # x = +4.5 and dead centre — which is where the goal mouth subtends the
+        # widest angle (±47°), so nearly any forward kick scores and the policy
+        # can bootstrap. The ball starts in a narrow cone in front of the
+        # standing foot: no approach step, no sideways strike.
         cmd = self.commands.soccer_kick
         cmd.ball_spawn_distance_range = (0.3, 0.4)
         cmd.ball_spawn_angle_range = (-math.radians(20.0), math.radians(20.0))
+        cmd.robot_spawn_x_range = (3.0, 3.0)
+        cmd.robot_spawn_y_range = (0.0, 0.0)
 
-        # Spawn in the *opponent* half (goal line at env-local x = +4.5) instead
-        # of the parent's own-half rectangle. Cap x at 3.0 (≥1.5 m from the goal
-        # line) so the ball placed 0.3-0.4 m ahead stays clear of the goal mouth
-        # and there is still a meaningful shooting distance for the standing kick.
-        cmd.robot_spawn_x_range = (0.0, 3.0)
+        # --- Goal-rate-gated widening of the four ranges above ---------------
+        # Added alongside the parent's ``contact_gated_weight`` term rather than
+        # replacing it; the two are independent (that one ramps reward weights).
+        #
+        # The ball cone is widened first and the robot spawn only afterwards.
+        # Widening the cone teaches a *new* motion (the ball sits off to the
+        # side, so it has to be struck sideways), while moving the spawn back
+        # teaches nothing new — the robot always faces the goal centre, so its
+        # body-frame task is unchanged and only the scoring tolerance shrinks
+        # (±47° at the stage-0 spot, ±8° in the far corners). Discovering the
+        # sideways kicks is far cheaper while the near/central spot is still
+        # forgiving enough to reward a clumsy first attempt.
+        #
+        # ``robot_spawn_y_final`` spans the full half-width, but the gate makes
+        # that a ceiling rather than a promise: the far/oblique corners leave
+        # only ~8° of aiming tolerance, so if the policy cannot hold the goal
+        # rate out there the level simply stops climbing instead of degrading.
+        self.curriculum.staged_kick = CurrTerm(
+            func=mdp.soccer_curriculums.StagedKickCurriculum,
+            params={
+                "command_name": "soccer_kick",
+                "termination_name": "goal_scored_done",
+                "goal_rate_threshold": 0.85,
+                "consecutive_required": 50,
+                "ema_alpha": 0.02,
+                "check_interval_steps": 24,
+                "cone_steps": 8,
+                "spawn_steps": 8,
+                "ball_spawn_distance_final": (0.3, 0.7),
+                "ball_spawn_angle_final": (-math.radians(90.0), math.radians(90.0)),
+                "robot_spawn_x_final": (0.0, 3.0),
+                "robot_spawn_y_final": (-3.0, 3.0),
+            },
+        )
 
         # --- Robot: 14-DOF K1 (arms welded at the deploy upper-body pose) ---
         # Replaces the parent's 22-DOF K1. ``joint_names=[".*"]`` in the parent's
