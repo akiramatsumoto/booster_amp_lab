@@ -468,9 +468,17 @@ class RewardsCfg:
         weight=4.0,
         params={"command_name": "soccer_kick"},
     )
+    # One-shot, so the return it contributes is ``weight * dt`` — 6.0 at the old
+    # 300, against the ~26 of discounted return an episode keeps paying (mostly
+    # AMP style, ~0.24/step) for simply NOT scoring. A goal was worth about -23
+    # net and the policy learned to stop scoring. ``goal_scored_done`` is now a
+    # truncation, so that remaining return is bootstrapped rather than
+    # confiscated and this weight no longer has to cover the whole forfeit by
+    # itself — but at 1000 (= 20.0 of return) a goal is finally the single
+    # largest event in the episode, which is what it should be.
     goal_scored = RewTerm(
         func=mdp.soccer_rewards.goal_scored_reward,
-        weight=300.0,
+        weight=1000.0,
         params={"command_name": "soccer_kick"},
     )
     # Experimental: reward kicking with the foot on the ball's spawn side.
@@ -601,9 +609,27 @@ class TerminationsCfg:
         func=mdp.soccer_terminations.ball_out_of_field,
         params={"command_name": "soccer_kick"},
     )
+    # ``time_out=True`` marks a goal as a TRUNCATION, not a failure terminal.
+    #
+    # Scoring is the task's success condition, but it also ends the episode. As a
+    # hard terminal the critic sees V(s')=0, so the policy forfeits every step of
+    # reward it would have collected for the rest of the episode. That stream is
+    # not small: the AMP style reward alone pays ~0.24/step (87% of the combined
+    # per-step return), so at gamma=0.99 a goal at t=1.5 s throws away ~26 of
+    # discounted return to collect a ~3 payout. Scoring was worth about -23, and
+    # the policy correctly learned to stop doing it — the goal rate climbed while
+    # it was still bumping the ball in by accident, then decayed as it worked out
+    # that touching the ball at all ends the gravy train (89% of episodes just
+    # ran out the clock).
+    #
+    # Truncation makes rsl_rl bootstrap ``gamma * V(s')`` instead, so the
+    # remaining return is no longer confiscated. It also fixes a second bug for
+    # free: ``terminated_penalty`` keys off ``dones & ~time_outs``, so a goal was
+    # being penalized as if the robot had fallen over.
     goal_scored_done = DoneTerm(
         func=mdp.soccer_terminations.goal_scored,
         params={"command_name": "soccer_kick"},
+        time_out=True,
     )
 
 

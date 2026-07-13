@@ -152,6 +152,25 @@ class FlatStandKickEnvCfg(FlatSoccerKickEnvCfg):
         amp.left_hand_pos = None
         amp.right_hand_pos = None
 
+        # --- Pre-kick approach shaping: dead weight here, and actively harmful ---
+        # ``ball_approach`` (4.0) and ``foot_ball_proximity`` (3.0) exist to solve
+        # the parent task's problem: walk to a ball that is metres away. This
+        # drill has no approach phase — the ball spawns 0.30-0.40 m from the root
+        # and the nearest foot starts 0.30-0.43 m from it, i.e. already inside
+        # both kernels. So they pay out in full from the very first step for
+        # standing exactly where the reset put you.
+        #
+        # Worse, both are gated on ``~kick_contact_awarded``: they go to zero the
+        # instant the foot touches the ball. Together they were 2.55 of the 2.76
+        # total task reward (92%), which makes "hover next to the ball and never
+        # touch it" the best thing the policy can do — and it did exactly that
+        # (peak ball speed 0.20 m/s, 89% of episodes timing out untouched).
+        #
+        # foot_ball_proximity is kept at a small weight: it still carries the only
+        # gradient that lines the foot up on the ball, which the kick needs.
+        self.rewards.ball_approach.weight = 0.0
+        self.rewards.foot_ball_proximity.weight = 0.5
+
         # --- undesired_contacts: drop the now-absent arm/hand bodies ---
         # Welding the arm joints makes the URDF importer lump the arm and hand
         # links into their parent (Trunk), so ``.*hand.*`` / ``.*Arm.*`` match no
