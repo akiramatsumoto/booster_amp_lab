@@ -54,6 +54,14 @@ class AMPLoader:
     OBS_DIM_NO_ROOT = END_POS_END_IDX            # 56
     OBS_DIM_WITH_ROOT = ROOT_ANG_VEL_END_IDX     # 62
 
+    # Leg-only corpus for the welded-arm K1: leg joint_pos[12] + leg joint_vel[12]
+    # + left_foot(3) + right_foot(3). Produced by ``scripts/make_leg_amp_corpus.py``.
+    # The index constants above describe the 22-DOF layout and do NOT apply to it;
+    # nothing in the AMP training path uses them (the discriminator consumes the
+    # frame as a flat `observation_dim` vector), only `scripts/verify_amp_loader.py`
+    # does, and that script targets the 62-col corpus.
+    OBS_DIM_LEGS = 30
+
     def __init__(
         self,
         device,
@@ -86,13 +94,18 @@ class AMPLoader:
             with open(motion_file) as f:
                 motion_json = json.load(f)
                 motion_data = np.array(motion_json["Frames"])
-                # Accept 56-col (legacy joint+EE) or 62-col (joint+EE+root_lin/ang_vel).
-                # All clips loaded together must agree.
+                # Accept 30-col (leg-only, welded-arm robot), 56-col (legacy
+                # joint+EE) or 62-col (joint+EE+root_lin/ang_vel). All clips
+                # loaded together must agree.
                 width = motion_data.shape[1]
-                if width not in (AMPLoader.OBS_DIM_NO_ROOT, AMPLoader.OBS_DIM_WITH_ROOT):
+                accepted = (
+                    AMPLoader.OBS_DIM_LEGS,
+                    AMPLoader.OBS_DIM_NO_ROOT,
+                    AMPLoader.OBS_DIM_WITH_ROOT,
+                )
+                if width not in accepted:
                     raise ValueError(
-                        f"{motion_file}: expected {AMPLoader.OBS_DIM_NO_ROOT} or "
-                        f"{AMPLoader.OBS_DIM_WITH_ROOT} columns, got {width}"
+                        f"{motion_file}: expected one of {accepted} columns, got {width}"
                     )
                 if loaded_obs_dim is None:
                     loaded_obs_dim = width
