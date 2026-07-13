@@ -104,7 +104,10 @@ class CommandsCfg:
         debug_vis=False,
         # Virtual head-camera perception. Mirrors the mjlab K1 V1.49 setup
         # (RealSense D435i on Head_2, hold_last_on_miss=False, 10% blind
-        # episodes, detection-prob floor 0.30, distance-dependent noise).
+        # episodes, detection-prob floor 0.30, distance-dependent noise), plus
+        # the 40° downward camera tilt that ``VirtualPerceptionCfg`` now
+        # defaults to — without it the ball sits below the vertical FOV at every
+        # reachable head pose and the task cannot bootstrap perception at all.
         perception=VirtualPerceptionCfg(),
         # V1.1 — lower kick-detection thresholds so early-policy taps still
         # register as kicks (the V1.0 baseline plateaued because peak
@@ -467,7 +470,7 @@ class RewardsCfg:
     )
     goal_scored = RewTerm(
         func=mdp.soccer_rewards.goal_scored_reward,
-        weight=250.0,
+        weight=300.0,
         params={"command_name": "soccer_kick"},
     )
     # Experimental: reward kicking with the foot on the ball's spawn side.
@@ -532,7 +535,7 @@ class RewardsCfg:
     # it also helps the policy survive the unstable follow-through.
     post_kick_alive = RewTerm(
         func=mdp.soccer_rewards.post_kick_alive,
-        weight=5.0,
+        weight=1.0,
         params={"command_name": "soccer_kick"},
     )
     alive = RewTerm(func=mdp.soccer_rewards.alive_reward, weight=0.5)
@@ -612,23 +615,28 @@ class CurriculumCfg:
     # curriculum) are gone — kick_shoot folds accuracy and speed into a single
     # positive one-shot term that needs no gating, since it is exactly zero
     # until a kick happens.
-    # Ramp the heavy stability/quality terms with the kick-contact return.
-    # ``terminated`` (-200), ``pelvis_orientation`` (-5) and ``goal_scored``
-    # (250) are far too strong for the *early* policy: the fall/tilt penalty in
-    # particular makes the balance-risky kick swing net-negative in expectation,
-    # so the policy freezes into a safe approach-and-search local optimum and
-    # never attempts a kick. With ``scale_cap=1.0`` each weight ramps from 0 up
-    # to its configured base value (the full strength above) and stops there —
-    # so the policy can freely explore the kick motion while contact is rare,
-    # and the stability/goal terms only tighten once contact is established.
+    # Ramp the heavy stability PENALTIES with the kick-contact return.
+    # ``terminated`` (-200) and ``pelvis_orientation`` (-5) are far too strong
+    # for the *early* policy: the fall/tilt penalty in particular makes the
+    # balance-risky kick swing net-negative in expectation, so the policy
+    # freezes into a safe approach-and-search local optimum and never attempts
+    # a kick. With ``scale_cap=1.0`` each weight ramps from 0 up to its
+    # configured base value (the full strength above) and stops there — so the
+    # policy can freely explore the kick motion while contact is rare, and the
+    # stability terms only tighten once contact is established.
     # gain=100 reaches full strength at ema(kick_contact)≈0.01.
+    #
+    # ``goal_scored`` is deliberately NOT in this list. Gating the task's own
+    # payout on the contact rate is a circular incentive: no contact ⇒ scale ≈ 0
+    # ⇒ goal pays ~4% of its nominal 250 ⇒ nothing rewards making contact. It is
+    # the *penalties* that need to be held back early, not the objective.
     contact_gated_weight = CurrTerm(
         func=mdp.soccer_curriculums.KickErrorWeightCurriculum,
         params={
             "gain": 100.0,
             "ema_alpha": 0.1,
             "contact_term": "kick_contact",
-            "scaled_terms": ["terminated", "pelvis_orientation", "goal_scored"],
+            "scaled_terms": ["terminated", "pelvis_orientation"],
             "scale_cap": 1.0,
             "max_abs_weight": None,
         },

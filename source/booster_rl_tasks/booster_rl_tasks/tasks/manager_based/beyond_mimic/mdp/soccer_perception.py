@@ -34,6 +34,34 @@ if TYPE_CHECKING:
     from isaaclab.assets import Articulation
 
 
+def pitch_down_quat(deg: float) -> tuple[float, float, float, float]:
+    """Quaternion rotating the camera optical +X axis downward about local +Y."""
+    half = math.radians(float(deg)) * 0.5
+    return (math.cos(half), 0.0, math.sin(half), 0.0)
+
+
+# Backwards-compatible private alias (the only name before the kick env cfgs
+# needed to reference the tilt).
+_pitch_down_quat = pitch_down_quat
+
+
+# Downward camera tilt for the K1 head camera, in degrees.
+#
+# The camera sits 0.92 m up and the ball is on the floor, so with an UNTILTED
+# boresight a ball closer than ~1.2 m sits 40-75 deg below it — outside the
+# 80 deg vertical FOV entirely. ``Head_pitch`` only travels to +49 deg, so an
+# untilted camera forces the policy to discover *and hold* a near-limit
+# head-down pose before it can ever earn a single detection. It never does:
+# the one reward that steers the head down (``head_pitch_alignment_to_ball``)
+# is itself gated on the ball being visible, so the task cannot bootstrap and
+# the policy settles for farming the ungated ``head_yaw_search`` term instead.
+#
+# 40 deg puts the whole 0.3-1.5 m ball range inside the vertical FOV at
+# head_pitch = 0. This is the value every hand-written preset below already
+# used; the identity default was the anomaly.
+K1_CAMERA_PITCH_DOWN_DEG: float = 40.0
+
+
 @configclass
 class VirtualPerceptionCfg:
     """Parameters for the simulated head-camera ball detector.
@@ -56,12 +84,14 @@ class VirtualPerceptionCfg:
     camera_offset_pos: tuple[float, float, float] = (0.06, 0.0, 0.10)
     """Camera optical-frame origin offset in the camera body's local frame (m)."""
 
-    camera_offset_quat: tuple[float, float, float, float] = (
-        1.0, 0.0, 0.0, 0.0,
+    camera_offset_quat: tuple[float, float, float, float] = pitch_down_quat(
+        K1_CAMERA_PITCH_DOWN_DEG
     )
     """Camera optical-frame orientation relative to the camera body (wxyz).
 
-    Identity by default — the camera looks forward along Head_2's +X axis.
+    Tilted ``K1_CAMERA_PITCH_DOWN_DEG`` downward from Head_2's +X axis. See that
+    constant: an identity (level) boresight cannot see a ball closer than ~1.2 m
+    at any reachable head pose, which deadlocks the kick tasks.
     """
 
     # ------------------------------------------------------------------ FOV
@@ -149,12 +179,6 @@ class VirtualPerceptionCfg:
     hold_last_on_miss: bool = False
     """When True, hold the most recent valid value on a miss. When False
     (default for K1), emit zeros. ``ball_mask`` is 0 either way."""
-
-
-def _pitch_down_quat(deg: float) -> tuple[float, float, float, float]:
-    """Quaternion rotating the camera optical +X axis downward about local +Y."""
-    half = math.radians(float(deg)) * 0.5
-    return (math.cos(half), 0.0, math.sin(half), 0.0)
 
 
 def soccer_vision_train_cfg(

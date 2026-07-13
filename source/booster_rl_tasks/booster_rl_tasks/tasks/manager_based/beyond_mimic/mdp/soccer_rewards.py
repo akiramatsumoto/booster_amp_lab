@@ -12,6 +12,7 @@ touching the env config.
 """
 from __future__ import annotations
 
+import math
 import torch
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,9 @@ from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 
 from booster_rl_tasks.tasks.manager_based.beyond_mimic.mdp.soccer_commands import (
     SoccerKickCommand,
+)
+from booster_rl_tasks.tasks.manager_based.beyond_mimic.mdp.soccer_perception import (
+    K1_CAMERA_PITCH_DOWN_DEG,
 )
 
 if TYPE_CHECKING:
@@ -764,23 +768,42 @@ def head_pitch_alignment_to_ball(
     env: "ManagerBasedRLEnv",
     command_name: str = "soccer_kick",
     pitch_joint_name: str = "Head_pitch",
+    camera_height_above_ball: float = 0.81,
+    camera_pitch_down_deg: float = K1_CAMERA_PITCH_DOWN_DEG,
+    pitch_limits: tuple[float, float] = (-0.349, 0.855),
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """Penalize squared diff between head pitch and elevation-to-ball.
+    """Penalize squared diff between head pitch and the pitch that centers the ball.
 
     K1 head pitch is positive when looking down. Larger distance ↦ smaller pitch.
+
+    NOT gated on ``ball_mask_perceived``, unlike the yaw twin. Gating it was the
+    bug that deadlocked the kick tasks: this is the only term that steers the
+    head *down*, and a ball closer than ~1.2 m starts out below the camera's
+    vertical FOV, so a visibility gate makes the one signal that could recover
+    the ball conditional on the ball already being visible. It uses GT ball
+    position, but only to aim an actuator — the policy's *observations* stay
+    perception-limited, so this is shaping, not leakage.
+
+    The geometry the old version used (a 0.35 m camera-above-ball constant, no
+    camera tilt) did not match the robot: the K1 head camera sits 0.92 m up, i.e.
+    0.81 m above the ball center, and is tilted ``camera_pitch_down_deg`` down.
+    The head only has to make up the remaining elevation, so the target is
+    ``atan2(h, range) - tilt``, clamped to the joint's travel.
     """
     cmd = _cmd(env, command_name)
     asset: Articulation = env.scene[asset_cfg.name]
     j_idx = asset.joint_names.index(pitch_joint_name)
     head_pitch = asset.data.joint_pos[:, j_idx]
-    # Approximate the pitch needed to look at ball: atan2(-z_rel, range_xy).
-    # In body-yaw frame, the ball is at (x, y, z_rel).
-    # Camera is ~0.4 m above ball when robot stands; pitch_target = atan2(0.4 - z_rel, range)
     range_xy = torch.linalg.norm(cmd.ball_pos_b[:, :2], dim=-1).clamp_min(1e-3)
-    desired_pitch = torch.atan2(torch.full_like(range_xy, 0.35), range_xy)
+    elevation = torch.atan2(
+        torch.full_like(range_xy, float(camera_height_above_ball)), range_xy
+    )
+    desired_pitch = (elevation - math.radians(float(camera_pitch_down_deg))).clamp(
+        float(pitch_limits[0]), float(pitch_limits[1])
+    )
     err = head_pitch - desired_pitch
-    return cmd.ball_mask_perceived * err * err
+    return err * err
 
 
 # =========================================================================
@@ -864,22 +887,30 @@ def head_yaw_search(
     command_name: str = "soccer_kick",
     yaw_joint_name: str = "AAHead_yaw",
     min_abs_rate: float = 0.5,
+    max_rate: float = 3.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     """Reward active head-yaw sweeping when the ball is not perceived.
 
-    V3.3. Returns ``clamp(|head_yaw_vel| - min_abs_rate, 0, ...) * (1 - ball_mask)``.
-    Encourages the policy to slew its head joint when the ball is out of
-    FOV, instead of waiting for the base-yaw rotation to bring the ball
-    back into view. Vectorized; no Python loops.
+    V3.3. Returns ``clamp((|head_yaw_vel| - min_abs_rate) / max_rate, 0, 1) *
+    (1 - ball_mask)``. Encourages the policy to slew its head joint when the ball
+    is out of FOV, instead of waiting for the base-yaw rotation to bring it back
+    into view. Vectorized; no Python loops.
 
-    Shape: (num_envs,).
+    The upper clamp is load-bearing. Without it this is an *unbounded* reward on
+    a joint velocity: the head actuator tops out at 20 rad/s, so a policy that
+    cannot see the ball can farm this term indefinitely by shaking its head, and
+    it did — the deadlocked kick policy sustained ~12.8 rad/s for whole episodes,
+    collecting ~1000x the entire task reward. Bounded to [0, 1] it matches its
+    twin :func:`search_yaw_velocity` and can only ever be worth `weight` per step.
+
+    Shape: (num_envs,) in ``[0, 1]``.
     """
     cmd = _cmd(env, command_name)
     asset: Articulation = env.scene[asset_cfg.name]
     j_idx = asset.joint_names.index(yaw_joint_name)
     head_yaw_vel = asset.data.joint_vel[:, j_idx].abs()
-    shaped = torch.clamp(head_yaw_vel - min_abs_rate, min=0.0)
+    shaped = torch.clamp((head_yaw_vel - min_abs_rate) / max_rate, min=0.0, max=1.0)
     not_seen = 1.0 - cmd.ball_mask_perceived
     # V5: no head-search reward once the env is in stop mode.
     active = 1.0 - cmd.stop_mode.float()
