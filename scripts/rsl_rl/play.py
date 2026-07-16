@@ -51,6 +51,18 @@ parser.add_argument(
     help="Override base_velocity command every step during play.",
 )
 parser.add_argument("--disable_push", action="store_true", default=False, help="Disable interval push events for play.")
+# Stand-kick curriculum: pin the staged difficulty for play. The level is
+# EMA-driven internal state that is not saved in the checkpoint, so a fresh play
+# run always starts at stage 0 (the easiest drill) unless this is set.
+parser.add_argument(
+    "--curriculum_level",
+    type=str,
+    default=None,
+    metavar="LEVEL",
+    help="Pin the StagedKickCurriculum to a fixed level for play: an integer "
+    "0..max_level, or 'max' (a negative value also means max). Without this, "
+    "play shows stage 0 because the trained level is not stored in the checkpoint.",
+)
 # walk→kick transition: reset into sampled mid-walk states (soccer kick task)
 parser.add_argument(
     "--walk_init",
@@ -161,6 +173,69 @@ class _LegacyRslRlEnv:
 
     def close(self):
         return self._env.close()
+
+def _apply_curriculum_level(base_env, level_arg):
+    """Pin the stand-kick ``StagedKickCurriculum`` to a fixed level for play.
+
+    The curriculum level is EMA-driven internal state (advances only after the
+    goal-rate EMA holds above threshold for N checks) and is *not* saved in the
+    checkpoint, so a fresh play run always restarts at stage 0 — the ball sits
+    0.3-0.4 m ahead in a ±20° cone with the robot at the near/central spot. This
+    forces the ball-cone / robot-spawn ranges to a chosen level so a trained
+    policy can be viewed at the difficulty it was actually trained on.
+
+    ``level_arg`` is ``'max'`` (or any negative int) for the top level, else an
+    integer that is clamped into ``0..max_level``.
+    """
+    cm = getattr(base_env, "curriculum_manager", None)
+    if cm is None:
+        print("[WARN] --curriculum_level set but env has no curriculum_manager; ignoring.")
+        return
+    # Class-based curriculum terms store the live term instance on ``cfg.func``.
+    # Match by the StagedKickCurriculum interface rather than a hard-coded name
+    # so this keeps working if the term is renamed across tasks.
+    term = term_name = None
+    for name, cfg in zip(getattr(cm, "_term_names", []), getattr(cm, "_term_cfgs", [])):
+        func = getattr(cfg, "func", None)
+        if hasattr(func, "max_level") and hasattr(func, "_apply_level"):
+            term, term_name = func, name
+            break
+    if term is None:
+        print("[WARN] --curriculum_level set but no StagedKickCurriculum term found; ignoring.")
+        return
+
+    if isinstance(level_arg, str) and level_arg.strip().lower() == "max":
+        level = term.max_level
+    else:
+        level = int(level_arg)
+        if level < 0:
+            level = term.max_level
+    level = max(0, min(level, term.max_level))
+
+    # Capture the stage-0 start ranges the same way the term does on its first
+    # call (only if it hasn't already), so ``_apply_level`` lerps from the right
+    # baseline.
+    cmd_cfg = base_env.command_manager.get_term(term.command_name).cfg
+    if term._start is None:
+        term._start = {
+            "dist": tuple(cmd_cfg.ball_spawn_distance_range),
+            "angle": tuple(cmd_cfg.ball_spawn_angle_range),
+            "x": tuple(cmd_cfg.robot_spawn_x_range),
+            "y": tuple(cmd_cfg.robot_spawn_y_range),
+        }
+    term._level = level
+    term._apply_level(base_env)
+    # Freeze it: an unreachable threshold stops the EMA from advancing the level
+    # mid-play, so the chosen difficulty stays put.
+    term.threshold = float("inf")
+    print(
+        f"[play] curriculum '{term_name}' pinned to level {level}/{term.max_level} | "
+        f"ball dist={tuple(round(v, 3) for v in cmd_cfg.ball_spawn_distance_range)} "
+        f"angle={tuple(round(v, 3) for v in cmd_cfg.ball_spawn_angle_range)} "
+        f"spawn_x={tuple(round(v, 3) for v in cmd_cfg.robot_spawn_x_range)} "
+        f"spawn_y={tuple(round(v, 3) for v in cmd_cfg.robot_spawn_y_range)}"
+    )
+
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
@@ -388,6 +463,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         reset_obs = _policy_obs_from_result(env.reset())
         reset_dones = torch.ones(env.num_envs, device=base_env.device, dtype=torch.long)
         return reset_obs, reset_dones
+
+    # Pin the stand-kick curriculum to a fixed difficulty before the first
+    # spawn. The level is not stored in the checkpoint, so without this the
+    # policy is always shown at stage 0 (the easiest drill). Reset so every env
+    # respawns with the new ball-cone / spawn ranges immediately.
+    if args_cli.curriculum_level is not None:
+        _apply_curriculum_level(env.unwrapped, args_cli.curriculum_level)
+        env.reset()
 
     # reset environment
     obs = _get_policy_obs()
