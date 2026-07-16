@@ -35,12 +35,12 @@ class PPORunnerCfg(BaseAMPAgentCfg):
     # AMP corpus: locomotion priors (legacy 56-col) + new 56-col walk+kick
     # clips. All clips share the env-side ``AMPObsCfg`` width (joint+EE, no
     # root vel = 56 cols); see ``scripts/build_amp_corpus.py``.
-    amp_reward_coef = 0.35
+    amp_reward_coef = 0.25
     amp_motion_files = [
         *_WALK_FILES,
         *_KICK_FILES,
     ]
     amp_num_preload_transitions = 200000
-    amp_task_reward_lerp = 0.65
+    amp_task_reward_lerp = 0.75
     amp_discr_hidden_dims = [1024, 512, 256]
     min_normalized_std = [0.05] * 22

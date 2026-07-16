@@ -91,7 +91,7 @@ class FlatStandKickEnvCfg(FlatSoccerKickEnvCfg):
             params={
                 "command_name": "soccer_kick",
                 "termination_name": "goal_scored_done",
-                "goal_rate_threshold": 0.85,
+                "goal_rate_threshold": 0.8,
                 "consecutive_required": 50,
                 "ema_alpha": 0.02,
                 "check_interval_steps": 24,
